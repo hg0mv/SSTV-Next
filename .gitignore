@@ -1,0 +1,17 @@
+# build output
+*.o
+/sstv_next
+/sstv_dec
+/sstv_enc
+/drm_enc
+/drm_dec
+/win/obj/
+/win/dist/
+# third-party Windows binaries (downloaded from the official releases)
+/win/bundle/
+# test media
+*.wav
+*.ppm
+# development material
+/real/
+/test/
