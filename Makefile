@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11 -D_DEFAULT_SOURCE
 LDLIBS  = -lm
 
-CORE = modes.o wav.o image.o demod.o rx.o tx.o
+CORE = modes.o wav.o image.o demod.o tones.o rx.o tx.o
 DRM  = drm_common.o drm_tx.o drm_rx.o mot.o rsfile.o
 APP  = $(CORE) $(DRM) fskid.o jp2.o imgio.o live.o audio.o rig.o adif.o config.o tpl.o ui.o
 

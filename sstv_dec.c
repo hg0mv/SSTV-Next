@@ -5,6 +5,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <unistd.h>
 #include "sstv.h"
@@ -12,6 +13,7 @@
 #include "wav.h"
 #include "demod.h"
 #include "rx.h"
+#include "tones.h"
 
 static void usage(void)
 {
@@ -48,9 +50,27 @@ int main(int argc, char **argv)
     if (!x) return 1;
     printf("%s: %.0f Hz, %.1f s\n", argv[optind], fs, n / fs);
 
-    float *f = fm_demod_buffer(x, n, fs);
+    float *y;
+    float *f = fm_demod_buffer_ex(x, n, fs, &y);
     sstv_fbuf fb;
     if (sstv_fbuf_init(&fb, f, n, fs)) { fprintf(stderr, "out of memory\n"); return 1; }
+    /* weak-signal helpers: baseband for the sync matched filter, tone rows for the VIS */
+    long nrow = (long)(n * 1000.0 / fs) + 2, first = -1;
+    float *T = calloc((size_t)nrow * TS_NB, sizeof(float));
+    tonespec *ts = ts_new(fs, 0);
+    float row[TS_NB];
+    for (long i = 0; i < n; i++) {
+        long j = ts_process(ts, x[i], row);
+        if (j < 0 || j >= nrow) continue;
+        if (first < 0) first = j;
+        memcpy(T + (size_t)j * TS_NB, row, sizeof row);
+        fb.tn = j + 1;
+    }
+    ts_free(ts);
+    fb.y = y;
+    fb.T = T;
+    fb.t0f = 0;
+    fb.tstep = fs / 1000.0;
 
     long from = 0;
     int count = 0;
@@ -114,6 +134,8 @@ int main(int argc, char **argv)
 
     sstv_fbuf_free(&fb);
     free(f);
+    free(y);
+    free(T);
     free(x);
     return 0;
 }

@@ -18,6 +18,7 @@
 #include <math.h>
 #include <time.h>
 #include "live.h"
+#include "tones.h"
 #include "demod.h"
 #include "rx.h"
 #include "imgio.h"
@@ -40,6 +41,11 @@ struct live {
 
     /* engine only */
     fmdemod *dm;
+    tonespec *ts;        /* tone powers for weak VIS headers */
+    float  *Y;           /* complex baseband of f (re, im) */
+    float  *T;           /* rows of TS_NB powers, row i = absolute row tbase + i */
+    long    tn, tcap, tbase;
+    long    abs0;        /* absolute index of f[0] */
     float  *f;
     double *P, *Q;
     long    n, cap;
@@ -80,10 +86,12 @@ static void buf_append(live *l, float y)
         l->f = realloc(l->f, (size_t)nc * sizeof(float));
         l->P = realloc(l->P, (size_t)(nc + 1) * sizeof(double));
         l->Q = realloc(l->Q, (size_t)(nc + 1) * sizeof(double));
+        l->Y = realloc(l->Y, (size_t)nc * 2 * sizeof(float));
         if (!l->cap) l->P[0] = l->Q[0] = 0;
         l->cap = nc;
     }
     l->f[l->n] = y;
+    fmdemod_baseband(l->dm, &l->Y[2 * l->n], &l->Y[2 * l->n + 1]);
     l->P[l->n + 1] = l->P[l->n] + y;
     l->Q[l->n + 1] = l->Q[l->n] + (double)y * y;
     l->n++;
@@ -96,8 +104,18 @@ static void buf_trim(live *l, long k)
     if (k > l->n) k = l->n;
     double p0 = l->P[k], q0 = l->Q[k];
     memmove(l->f, l->f + k, (size_t)(l->n - k) * sizeof(float));
+    memmove(l->Y, l->Y + 2 * k, (size_t)(l->n - k) * 2 * sizeof(float));
     for (long i = 0; i <= l->n - k; i++) { l->P[i] = l->P[i + k] - p0; l->Q[i] = l->Q[i + k] - q0; }
     l->n -= k;
+    l->abs0 += k;
+    {   /* tone rows older than the buffer (a few ms of margin) */
+        long keep = (long)floor(l->abs0 * 1000.0 / l->fs) - 30, d = keep - l->tbase;
+        if (d > l->tn) d = l->tn;
+        if (d > 0) {
+            memmove(l->T, l->T + (size_t)d * TS_NB, (size_t)(l->tn - d) * TS_NB * sizeof(float));
+            l->tn -= d; l->tbase += d;
+        }
+    }
     l->search_from -= k; if (l->search_from < 0) l->search_from = 0;
     l->sync_from -= k; if (l->sync_from < 0) l->sync_from = 0;
     l->last_auto -= k; if (l->last_auto < 0) l->last_auto = 0;
@@ -105,9 +123,30 @@ static void buf_trim(live *l, long k)
     l->t0 -= (double)k;
 }
 
+static void tone_row(live *l, float x)
+{
+    float row[TS_NB];
+    long j = ts_process(l->ts, x, row);
+    if (j < 0) return;
+    if (l->tn == 0) l->tbase = j;
+    long i = j - l->tbase;
+    if (i < 0) return;
+    if (i + 1 > l->tcap) {
+        long nc = l->tcap ? l->tcap * 2 : 60000;
+        while (nc < i + 1) nc *= 2;
+        l->T = realloc(l->T, (size_t)nc * TS_NB * sizeof(float));
+        l->tcap = nc;
+    }
+    for (long r = l->tn; r < i; r++) memset(l->T + (size_t)r * TS_NB, 0, TS_NB * sizeof(float));
+    memcpy(l->T + (size_t)i * TS_NB, row, sizeof row);
+    l->tn = i + 1;
+}
+
 static void fbuf_of(const live *l, sstv_fbuf *b)
 {
     b->f = l->f; b->n = l->n; b->fs = l->fs; b->P = l->P; b->Q = l->Q;
+    b->T = l->T; b->tn = l->tn; b->y = l->Y; b->tstep = l->fs / 1000.0;
+    b->t0f = l->tbase * b->tstep - (double)l->abs0;
 }
 
 /* ------------------------------------------------------------ publish --- */
@@ -233,7 +272,7 @@ static void work_idle(live *l)
     l->pending = 0;
     /* start-bit positions up to n - 300 ms are checked; the next pass begins there
      * (sstv_vis_find starts 312 ms after 'from') - nothing is examined twice */
-    long keep = l->n - (long)(0.615 * l->fs);
+    long keep = l->n - (long)(0.650 * l->fs);      /* the tone rows lag ~12 ms */
     if (keep > l->search_from) l->search_from = keep;
 
     if (force) {                                     /* receive without VIS: periodic syncs */
@@ -465,6 +504,8 @@ static void *engine(void *arg)
             buf_trim(l, l->n);
             l->search_from = l->sync_from = 0;
             fmdemod_free(l->dm); l->dm = fmdemod_new(l->fs);
+            ts_free(l->ts); l->ts = ts_new(l->fs, fmdemod_delay(l->dm));
+            l->abs0 = 0; l->tn = 0; l->tbase = 0;
             drm_rx_reset(&l->drm);
         }
         l->muted_now = muted;
@@ -474,6 +515,7 @@ static void *engine(void *arg)
             float f = fmdemod_process(l->dm, tmp[i]);
             buf_append(l, f);
             fskid_process(&l->fid, f);
+            tone_row(l, tmp[i]);
         }
         if (avail) { drm_rx_process(&l->drm, tmp, (int)avail); drm_status(l); }
 
@@ -499,6 +541,7 @@ live *live_new(double fs, const char *save_dir)
     l->fs = fs;
     l->ring = calloc(RING, sizeof(float));
     l->dm = fmdemod_new(fs);
+    l->ts = ts_new(fs, fmdemod_delay(l->dm));
     pthread_mutex_init(&l->rmx, NULL);
     pthread_mutex_init(&l->omx, NULL);
     snprintf(l->dir, sizeof l->dir, "%s", save_dir);
@@ -517,9 +560,11 @@ void live_free(live *l)
     atomic_store(&l->run, 0);
     pthread_join(l->th, NULL);
     fmdemod_free(l->dm);
+    ts_free(l->ts);
+    free(l->T);
     drm_rx_free(&l->drm);
     fskid_free(&l->fid);
-    free(l->ring); free(l->f); free(l->P); free(l->Q);
+    free(l->ring); free(l->f); free(l->Y); free(l->P); free(l->Q);
     image_free(l->img);
     free(l);
 }

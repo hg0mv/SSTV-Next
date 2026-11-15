@@ -11,6 +11,12 @@ typedef struct {
     long   n;
     double fs;
     double *P, *Q;     /* prefix sums of f and f^2, length n+1 */
+    /* optional tone powers (tones.h), NULL if not available: row r is centred on
+       sample t0f + r * tstep of f; used to find weak VIS headers */
+    const float *T;
+    long   tn;
+    const float *y;    /* optional complex baseband of the discriminator (re, im per sample of f) */
+    double t0f, tstep;
 } sstv_fbuf;
 
 int  sstv_fbuf_init(sstv_fbuf *b, const float *f, long n, double fs);

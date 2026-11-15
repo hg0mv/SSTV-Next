@@ -87,6 +87,27 @@ float fmdemod_process(fmdemod *d, float x)
     return (float)(FM_CENTER + atan2(di, dr) * d->fs / (2 * M_PI));
 }
 
+void fmdemod_baseband(const fmdemod *d, float *re, float *im) { *re = (float)d->pre; *im = (float)d->pim; }
+
+float *fm_demod_buffer_ex(const float *x, long n, double fs, float **baseband)
+{
+    fmdemod *d = fmdemod_new(fs);
+    int D = fmdemod_delay(d);
+    float *f = malloc((size_t)(n ? n : 1) * sizeof(float));
+    float *y = baseband ? malloc((size_t)(n ? n : 1) * 2 * sizeof(float)) : NULL;
+    for (long i = 0; i < n + D; i++) {
+        float v = fmdemod_process(d, i < n ? x[i] : 0.0f);
+        long j = i - D;
+        if (j >= 0 && j < n) {
+            f[j] = v;
+            if (y) fmdemod_baseband(d, &y[2 * j], &y[2 * j + 1]);
+        }
+    }
+    fmdemod_free(d);
+    if (baseband) *baseband = y;
+    return f;
+}
+
 float *fm_demod_buffer(const float *x, long n, double fs)
 {
     fmdemod *d = fmdemod_new(fs);

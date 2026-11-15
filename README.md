@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.9). Tested with recordings and simulated channels;
+**Status:** development version (M0.10). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ## Features
@@ -15,6 +15,10 @@ on-air reports are welcome.
 - **Analog SSTV, 25 modes**: Robot, Scottie, Martin, PD, Wraase, Pasokon, FAX480.
   Automatic mode detection from the VIS header, or from the sync pulses when the VIS was
   missed. Robust against QRM on the header, slant correction, QRM speck filter.
+- **Weak-signal reception**: the VIS header and the sync pulses are also detected with
+  narrow-band (matched) filters, not only with the FM discriminator, so reception starts
+  and holds down to about 0 dB SNR (2.5 kHz bandwidth), well below where the picture
+  becomes readable - if you can hear it, it starts.
 - **Digital SSTV (HamDRM)**: own implementation from the DRM standard, bit-identical
   signal to QSSTV. Robustness modes A/B/E, 4/16/64-QAM, Reed-Solomon protected files
   (`.rs1`-`.rs4`), repeat requests (BSR), JPEG and JPEG 2000 pictures.
@@ -200,6 +204,7 @@ the full-height variant is shown then. The MMSSTV-specific modes (MP, MR, ML, ex
 |------|----------|
 | `modes.c` | mode table (a new mode is one line) |
 | `demod.c` | FM discriminator (instantaneous frequency) |
+| `tones.c` | sliding DFT tone powers (weak-signal VIS detection) |
 | `rx.c` | VIS search, sync tracking, robust slant fit, picture building |
 | `tx.c` | encoder (phase-continuous FM, VIS header) |
 | `tpl.c` | templates: objects, TrueType text (stb_truetype), drawing, saving |

@@ -8,12 +8,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include "rx.h"
+#include "tones.h"
+#include "demod.h"
 
 int sstv_fbuf_init(sstv_fbuf *b, const float *f, long n, double fs)
 {
     b->f = f;
     b->n = n;
     b->fs = fs;
+    b->T = NULL;
+    b->y = NULL;
+    b->tn = 0;
+    b->t0f = 0;
+    b->tstep = fs / 1000.0;
     b->P = malloc((size_t)(n + 1) * sizeof(double));
     b->Q = malloc((size_t)(n + 1) * sizeof(double));
     if (!b->P || !b->Q) return -1;
@@ -162,7 +169,7 @@ static unsigned long long vis_candidates(int code, unsigned known)
     return m;
 }
 
-int sstv_vis_find(const sstv_fbuf *b, long from, sstv_vis *v)
+static int vis_find_fm(const sstv_fbuf *b, long from, sstv_vis *v)
 {
     double ms = b->fs / 1000.0;
     for (long s = from + (long)(312 * ms); s + (long)(300 * ms) < b->n; s++) {
@@ -217,6 +224,170 @@ int sstv_vis_find(const sstv_fbuf *b, long from, sstv_vis *v)
     return 0;
 }
 
+/* ------------------------------------------- weak-signal VIS (tones) --- */
+
+/* Prefix sums of the tone rows (tones.h): column TS_NB is the total */
+typedef struct {
+    long    r0, nr;
+    double *S;
+} tsum;
+
+static int tsum_init(tsum *q, const sstv_fbuf *b, long r0, long r1)
+{
+    if (r0 < 0) r0 = 0;
+    if (r1 > b->tn) r1 = b->tn;
+    q->r0 = r0;
+    q->nr = r1 - r0;
+    q->S = NULL;
+    if (q->nr <= 0) return 0;
+    const int W = TS_NB + 1;
+    q->S = malloc((size_t)(q->nr + 1) * W * sizeof(double));
+    for (int k = 0; k < W; k++) q->S[k] = 0;
+    for (long i = 0; i < q->nr; i++) {
+        const float *row = b->T + (size_t)(r0 + i) * TS_NB;
+        double *a = q->S + (size_t)i * W, *c = a + W, tot = 0;
+        for (int k = 0; k < TS_NB; k++) { c[k] = a[k] + row[k]; tot += row[k]; }
+        c[TS_NB] = a[TS_NB] + tot;
+    }
+    return 1;
+}
+
+/* energy of rows [a, b) within +-37.5 Hz of F (F < 0: whole band) */
+static double tsum_e(const tsum *q, long a, long b, double F)
+{
+    a -= q->r0; b -= q->r0;
+    if (a < 0) a = 0;
+    if (b > q->nr) b = q->nr;
+    if (b <= a) return 0;
+    const int W = TS_NB + 1;
+    const double *A = q->S + (size_t)a * W, *B = q->S + (size_t)b * W;
+    if (F < 0) return B[TS_NB] - A[TS_NB];
+    int k0 = (int)ceil((F - 37.5 - TS_F0) / TS_DF - 1e-9), k1 = (int)floor((F + 37.5 - TS_F0) / TS_DF + 1e-9);
+    if (k0 < 0) k0 = 0;
+    if (k1 > TS_NB - 1) k1 = TS_NB - 1;
+    double e = 0;
+    for (int k = k0; k <= k1; k++) e += B[k] - A[k];
+    return e;
+}
+
+static double tsum_frac(const tsum *q, long a, long b, double F)
+{
+    double t = tsum_e(q, a, b, -1);
+    return t > 0 ? tsum_e(q, a, b, F) / t : 0;
+}
+
+/* VIS header with its start bit at row s, leader offset bin ob: returns the match
+ * score (-1: no header), code and known bits */
+static double vis_tone_eval(const tsum *q, long s, int ob, int *code, unsigned *known)
+{
+    double off = TS_DF * ob, ref = 1200 + off;
+    double fl = tsum_frac(q, s - 250, s - 10, 1900 + off);
+    if (fl < 0.3) return -1;
+    double f0 = tsum_frac(q, s + 10, s + 20, ref), f9 = tsum_frac(q, s + 280, s + 290, ref);
+    double fb = tsum_frac(q, s - 306, s - 304, ref);
+    if ((f0 > 0.25) + (f9 > 0.25) + (fb > 0.1) < 2 || (f0 <= 0.25 && f9 <= 0.25)) return -1;
+    double sc = fl + f0 + f9;
+    int c = 0;
+    unsigned kn = 0;
+    for (int i = 0; i < 8; i++) {
+        long a = s + 30 * (i + 1) + 10, e = s + 30 * (i + 2) - 10;
+        double t = tsum_e(q, a, e, -1);
+        if (t <= 0) continue;
+        double e1 = tsum_e(q, a, e, 1100 + off), e0 = tsum_e(q, a, e, 1300 + off);
+        sc += fmax(e1, e0) / t;
+        if ((e1 + e0) / t > 0.2 && fabs(e1 - e0) > 0.35 * (e1 + e0)) {
+            kn |= 1u << i;
+            if (e1 > e0) c |= 1 << i;
+        }
+    }
+    *code = c;
+    *known = kn;
+    return sc;
+}
+
+static int vis_find_tones(const sstv_fbuf *b, long from, sstv_vis *v)
+{
+    if (!b->T || b->tn < 700) return 0;
+    long slo = (long)ceil((from - b->t0f) / b->tstep) + 312, shi = b->tn - 1 - 302;
+    if (slo < 330) slo = 330;
+    if (shi < slo) return 0;
+    tsum q;
+    if (!tsum_init(&q, b, slo - 330, shi + 302)) return 0;
+    int found = 0;
+    for (long s = slo; s <= shi && !found; s++) {
+        double tl = tsum_e(&q, s - 250, s - 10, -1);
+        if (tl <= 0) continue;
+        int ob = 0;
+        double fl = 0;
+        for (int o = -8; o <= 8; o++) {
+            double e = tsum_e(&q, s - 250, s - 10, 1900 + TS_DF * o) / tl;
+            if (e > fl) { fl = e; ob = o; }
+        }
+        if (fl < 0.3) continue;
+        int code;
+        unsigned known;
+        if (vis_tone_eval(&q, s, ob, &code, &known) < 0) continue;
+        /* best alignment of the whole header */
+        long best = s;
+        double bs = -1;
+        for (long t = s - 3; t <= s + 25 && t <= shi; t++) {
+            int c2; unsigned k2;
+            double sc = vis_tone_eval(&q, t, ob, &c2, &k2);
+            if (sc > bs) { bs = sc; best = t; }
+        }
+        if (vis_tone_eval(&q, best, ob, &code, &known) < 0) continue;
+        if ((known & 0xFF) != 0xFF || parity7(code & 0x7F) != ((code >> 7) & 1) || !sstv_mode_by_vis(code & 0x7F))
+            continue;
+        /* mistuning: parabola through the leader bins around the peak */
+        double c0 = tsum_e(&q, best - 250, best - 10, 1900 + TS_DF * ob);
+        double cl = 0, cr = 0;
+        {
+            long a = best - 250 - q.r0, e = best - 10 - q.r0;
+            const int W = TS_NB + 1;
+            int k = (int)lround((1900 + TS_DF * ob - TS_F0) / TS_DF);
+            if (k > 0 && k < TS_NB - 1 && a >= 0 && e <= q.nr) {
+                double m0 = q.S[e * W + k] - q.S[a * W + k];
+                cl = q.S[e * W + k - 1] - q.S[a * W + k - 1];
+                cr = q.S[e * W + k + 1] - q.S[a * W + k + 1];
+                c0 = m0;
+            }
+        }
+        double den = cl - 2 * c0 + cr, d = den < 0 ? 0.5 * (cl - cr) / den : 0;
+        if (d > 0.5) d = 0.5;
+        if (d < -0.5) d = -0.5;
+        v->offset = TS_DF * (ob + d);
+        v->img_start = b->t0f + (best + 300) * b->tstep;
+        v->code = code & 0x7F;
+        v->complete = 1;
+        v->cand = vis_candidates(code, known);
+        found = 1;
+    }
+    free(q.S);
+    return found;
+}
+
+/* The VIS is looked for on the FM discriminator (exact timing, robust to voice QRM)
+ * and on the tone powers (works on much weaker signals); the earlier header wins. */
+int sstv_vis_find(const sstv_fbuf *b, long from, sstv_vis *v)
+{
+    sstv_vis a, t;
+    int fa = vis_find_fm(b, from, &a), ft = vis_find_tones(b, from, &t);
+    if (getenv("SSTV_DEBUG") && ft) fprintf(stderr, "tone VIS %d at %.0f off %+.1f (fm %d %.0f)\n", t.code, t.img_start, t.offset, fa ? a.code : -9, fa ? a.img_start : 0);
+    if (!fa && !ft) return 0;
+    if (fa && ft) {
+        double tol = 0.03 * b->fs;
+        if (fabs(a.img_start - t.img_start) < tol) {      /* the same header */
+            if (!a.complete) { a.code = t.code; a.complete = 1; a.cand = t.cand; }
+            *v = a;
+            return 1;
+        }
+        *v = a.img_start < t.img_start ? a : t;
+        return 1;
+    }
+    *v = fa ? a : t;
+    return 1;
+}
+
 /* --------------------------------------------------------------- sync --- */
 
 /* Prefix sums of a soft "is this sync" indicator: 1 at 1200 Hz, 0 at 1500 Hz */
@@ -224,7 +395,55 @@ typedef struct {
     long    r0, r1;
     int     W;
     double *S;
+    float  *V;      /* matched 1200 Hz filter on the baseband (NULL: not available) */
 } syncbox;
+
+/* Matched 1200 Hz (+off) filter on the discriminator's baseband: for every window of
+ * W samples starting at r0 + i, |sum of the baseband turned to 1200 Hz|^2 / (W * energy).
+ * 1 for a clean sync pulse, ~1/(W * 2 kHz) for noise; keeps working far below the FM
+ * threshold, where the discriminator only gives clicks. NULL if there is no baseband. */
+static float *tone_sync(const sstv_fbuf *b, long r0, long r1, int W, double off)
+{
+    long nr = r1 - r0;
+    if (!b->y || nr <= W || W < 1) return NULL;
+    float *zr = malloc((size_t)nr * sizeof(float)), *zi = malloc((size_t)nr * sizeof(float));
+    double w = -2 * M_PI * (SSTV_F_SYNC + off - FM_CENTER) / b->fs;
+    double pr = 1, pi = 0, cr = cos(w), ci = sin(w);
+    for (long i = 0; i < nr; i++) {
+        double yr = b->y[2 * (r0 + i)], yi = b->y[2 * (r0 + i) + 1];
+        zr[i] = (float)(yr * pr - yi * pi);
+        zi[i] = (float)(yr * pi + yi * pr);
+        double t = pr * cr - pi * ci; pi = pr * ci + pi * cr; pr = t;
+        if ((i & 1023) == 0) { double m = 1.0 / hypot(pr, pi); pr *= m; pi *= m; }
+    }
+    /* coherent over at most 5 ms (a mistuning of 50 Hz then costs < 20 %), the rest of
+     * the window is summed in power */
+    int Wc = (int)lround(0.005 * b->fs);
+    if (Wc > W) Wc = W;
+    float *V = calloc((size_t)nr, sizeof(float));
+    double Cr = 0, Ci = 0, E = 0;
+    for (long i = 0; i < nr; i++) {
+        Cr += zr[i]; Ci += zi[i]; E += (double)zr[i] * zr[i] + (double)zi[i] * zi[i];
+        if (i >= Wc) { long j = i - Wc; Cr -= zr[j]; Ci -= zi[j]; E -= (double)zr[j] * zr[j] + (double)zi[j] * zi[j]; }
+        if (i >= Wc - 1 && E > 1e-20) {
+            double v = (Cr * Cr + Ci * Ci) / (Wc * E);
+            V[i - Wc + 1] = (float)(v > 1 ? 1 : v);
+        }
+    }
+    if (W > Wc) {                     /* V[p] = mean of the coherent values over [p, p + W - Wc] */
+        int L = W - Wc + 1;
+        double acc = 0;
+        for (long i = 0; i < nr; i++) {
+            acc += V[i];
+            if (i >= L) acc -= zr[i - L];          /* zr reused: the coherent values that left */
+            zr[i] = V[i];
+            if (i >= L - 1) V[i - L + 1] = (float)(acc / L);
+        }
+        for (long i = nr - L + 1; i < nr; i++) if (i >= 0) V[i] = 0;
+    }
+    free(zr); free(zi);
+    return V;
+}
 
 static void syncbox_init(syncbox *sb, const sstv_fbuf *b, long r0, long r1, int W, double off)
 {
@@ -242,13 +461,27 @@ static void syncbox_init(syncbox *sb, const sstv_fbuf *b, long r0, long r1, int 
         if (x > 1) x = 1;
         sb->S[i - r0 + 1] = sb->S[i - r0] + x;
     }
+    sb->V = tone_sync(b, r0, r1, W, off);
 }
+
+static void syncbox_free(syncbox *sb) { free(sb->S); free(sb->V); sb->S = NULL; sb->V = NULL; }
+
+#define SB_TONE_GAIN 2.5
 
 /* fraction of the W-sample window starting at p that looks like sync */
 static double syncbox_at(const syncbox *sb, long p)
 {
     if (p < sb->r0 || p + sb->W > sb->r1) return 0;
-    return (sb->S[p - sb->r0 + sb->W] - sb->S[p - sb->r0]) / sb->W;
+    double v = (sb->S[p - sb->r0 + sb->W] - sb->S[p - sb->r0]) / sb->W;
+    if (sb->V) {
+        /* the matched filter, lifted (monotonically, so its peak stays where it is) so that
+         * a weak pulse still reaches the FM thresholds; below 1, so that on a strong signal
+         * the FM measure keeps deciding where the pulse is */
+        double t = sb->V[p - sb->r0], g = SB_TONE_GAIN;
+        t = 0.95 * g * t / (1 + (g - 1) * t);
+        if (t > v) v = t;
+    }
+    return v;
 }
 
 static long syncbox_peak(const syncbox *sb, long lo, long hi, double *val)
@@ -285,7 +518,7 @@ int sstv_sync_find(const sstv_fbuf *b, const sstv_mode *m, long from, double off
         found = 1;
         break;
     }
-    free(sb.S);
+    syncbox_free(&sb);
     return found;
 }
 
@@ -345,7 +578,7 @@ int sstv_vis_resolve(const sstv_fbuf *b, const sstv_vis *v, int final, const sst
         if (getenv("SSTV_DEBUG")) fprintf(stderr, "  resolve %-14s fit %.2f%s\n", m->name, fit, !all && (v->cand >> i & 1) ? " (VIS bits fit)" : "");
         if (sc > bs + 1e-9) { bs = sc; bfit = fit; best = m; }  /* equal timing (S1/S3 ...): the first one */
     }
-    free(sb.S);
+    syncbox_free(&sb);
     if (!best || bfit < 0.5) return -1;
     *out = best;
     return 1;
@@ -390,11 +623,71 @@ static double tone_error(const sstv_fbuf *b, const sstv_mode *m, double ls, doub
     return k ? e / k : 1e9;
 }
 
+/* Weak signals: sync pulses from the 4 ms matched filter (tone_sync). Runs above half
+ * of their peak give the pulse: a window of W is half-power 0.29 W before the start and
+ * 0.71 W before the end. Where both finders saw a pulse, the discriminator's wins unless
+ * it is only a fragment (clicks cut it). */
+static int find_pulses_tone(const sstv_fbuf *b, long from, double off, pulse *p, int np, int maxp)
+{
+    double ms = b->fs / 1000.0;
+    int W = (int)lround(4 * ms);
+    if (from < 0) from = 0;
+    float *V = tone_sync(b, from, b->n, W, off);
+    if (!V) return np;
+    long nr = b->n - from - W;
+    pulse *q = malloc((size_t)maxp * sizeof *q);
+    int nq = 0;
+    for (long i = 0; i < nr && nq < maxp; i++) {
+        if (V[i] < 0.4f) continue;
+        long e = i;
+        float mx = 0;
+        while (e < nr && V[e] >= 0.15f) { if (V[e] > mx) mx = V[e]; e++; }
+        long a = i, z = e;                  /* half of the peak */
+        while (a < e && V[a] < 0.5f * mx) a++;
+        while (z > a && V[z - 1] < 0.5f * mx) z--;
+        double st = from + a + 0.29 * W, len = (z - a) + 0.41 * W;
+        i = e;
+        if (len < 3.5 * ms || len > 24 * ms) continue;
+        /* a pulse, not a fluttering carrier near 1200 Hz: little of it just before and after */
+        long g = (long)lround(3 * ms), b0 = a - W - g, a1 = z + W;
+        if (b0 < 0 || a1 + g > nr) continue;
+        double sb = 0, sa = 0;
+        for (long t = 0; t < g; t++) { sb += V[b0 + t]; sa += V[a1 + t]; }
+        if (sb / g > 0.5 * mx || sa / g > 0.5 * mx) continue;
+        q[nq].s = (long)lround(st); q[nq].len = len; nq++;
+    }
+    free(V);
+    /* drop discriminator fragments inside a longer tone pulse, then tone pulses that
+     * are already there */
+    int k = 0;
+    for (int i = 0; i < np; i++) {
+        int frag = 0;
+        for (int j = 0; j < nq && !frag; j++)
+            frag = p[i].s < q[j].s + q[j].len && q[j].s < p[i].s + p[i].len && p[i].len < 0.8 * q[j].len;
+        if (!frag) p[k++] = p[i];
+    }
+    np = k;
+    int n0 = np;
+    for (int j = 0; j < nq && np < maxp; j++) {
+        int dup = 0;
+        for (int i = 0; i < n0 && !dup; i++) dup = p[i].s < q[j].s + q[j].len && q[j].s < p[i].s + p[i].len;
+        if (!dup) p[np++] = q[j];
+    }
+    free(q);
+    for (int i = 1; i < np; i++) {          /* back into time order */
+        pulse t = p[i]; int j = i - 1;
+        while (j >= 0 && p[j].s > t.s) { p[j + 1] = p[j]; j--; }
+        p[j + 1] = t;
+    }
+    return np;
+}
+
 int sstv_auto_find(const sstv_fbuf *b, long from, double off, const sstv_mode **mode, double *t0)
 {
-    enum { MAXP = 2048 };
+    enum { MAXP = 4096 };
     pulse *p = malloc(MAXP * sizeof *p);
     int np = find_pulses(b, from, off, p, MAXP);
+    np = find_pulses_tone(b, from, off, p, np, MAXP);
     double ms = b->fs / 1000.0;
     const sstv_mode *best = NULL;
     int bestn = 0, bestfirst = -1;
@@ -619,7 +912,7 @@ image *sstv_decode_ex(const sstv_fbuf *b, const sstv_mode *m, double t0, double 
     }
     free(K);
     free(T);
-    free(sb.S);
+    syncbox_free(&sb);
 
     /* pass 3: render, every segment scaled with the measured line period.
      * Values go into per-channel planes (RGB, or Y/Cr/Cb for PD) first. */
