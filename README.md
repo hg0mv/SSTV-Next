@@ -10,7 +10,7 @@ The radio control (rigctld), sound card handling and ADIF log come from
 **Status:** development version (M0.10). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
-![Main window]()
+![Main window](sstv_next_main_window.png)
 
 ## Features
 
