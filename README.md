@@ -10,6 +10,8 @@ The radio control (rigctld), sound card handling and ADIF log come from
 **Status:** development version (M0.10). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
+![Main window]()
+
 ## Features
 
 - **Analog SSTV, 25 modes**: Robot, Scottie, Martin, PD, Wraase, Pasokon, FAX480.
