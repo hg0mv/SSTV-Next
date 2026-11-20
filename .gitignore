@@ -15,3 +15,7 @@
 # development material
 /real/
 /test/
+
+# release packages belong to GitHub Releases, not the source
+*.zip
+*.tar.gz
