@@ -123,6 +123,21 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     on. Sending pauses the scanner on that frequency (a QSO); a click on Scan goes on.
     The scanner never transmits by itself: is the frequency really free, is the antenna
     right for that band - that is the operator's decision.
+  - **Other radios**: the scanner is not FT-891 specific; it works with any radio Hamlib
+    (rigctld) can control, with CAT set up in the Radio dialog. It sends two commands:
+    - *set frequency* - practically every CAT radio can do it;
+    - *set mode* `PKTLSB` / `PKTUSB`, the radio's DATA mode, which every maker names
+      differently (Yaesu D-L / D-U, Icom LSB-D / USB-D, Kenwood LSB-D / USB-D,
+      Elecraft DATA); Hamlib knows them all by the same name.
+
+    Where it can go wrong:
+    - *Older radios without a DATA mode* (Hamlib does not know `PKTUSB` for them): the
+      mode command fails and is ignored - the frequency changes, but the radio stays in
+      its last mode, so the sideband (LSB / USB) is not switched either.
+    - *Audio through the microphone socket in plain USB / LSB*: here the DATA mode can
+      even be harmful, as the radio then takes the audio from the rear (data) socket and
+      nothing goes out.
+    - *No CAT, VOX only*: no scanning; the program says that CAT is needed (Radio).
   - Click a picture in the gallery to view it large; **Live** goes back. Below it: the
     sender's callsign (FSK ID), SNR, mistuning, clock error, lines - stored in the PNG
     (text chunk `SSTVNext`), so they stay with the file. The gallery shows the SNR on every
