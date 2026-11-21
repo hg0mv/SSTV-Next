@@ -46,6 +46,9 @@ live *live_new(double fs, const char *save_dir);
 void  live_free(live *l);
 void  live_push(live *l, const float *x, int n);      /* capture thread */
 void  live_mute(live *l, int on);                     /* while transmitting */
+/* own sound card clock error (ppm, decoder's sign; NAN unknown): the clock stored with
+   received pictures is the other station's, this taken off */
+void  live_set_clock(live *l, double ppm);
 void  live_set_nr(live *l, int on);                   /* QRM speck removal (default on) */
 void  live_set_force(live *l, const sstv_mode *m);    /* NULL: VIS only */
 void  live_set_dir(live *l, const char *save_dir);

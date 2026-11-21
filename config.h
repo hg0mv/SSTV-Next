@@ -22,6 +22,10 @@ typedef struct {
     int  drm_rs;                               /* Reed-Solomon protection 0 (off) .. 4 */
     int  fskid;                                /* send FSK ID (callsign) after analog pictures */
     int  tpl_report;                           /* the "Report" template has been created once */
+    /* own sound card clock: the slant measured on good received pictures (decoder's ppm);
+       the median is our card's error, every station seems to have it */
+    double clk[16]; int nclk;
+    int  txclk;                                /* correct our transmission by it */
 } app_config;
 
 extern app_config cfg;

@@ -56,6 +56,7 @@ struct live {
     struct { image *img; char mode[16], path[300]; time_t t; float *rq; } rec[NREC];
     int     nrec;
     time_t  last_saved;
+    double  own_ppm;     /* own sound card clock (live_set_clock), NAN unknown */
     float  *f;
     double *P, *Q;
     long    n, cap;
@@ -184,8 +185,12 @@ static void make_meta(live *l, const live_status *st, const sstv_rxinfo *info, c
 {
     struct tm g; gmtime_r(&l->started, &g);
     char ts[32]; strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &g);
+    pthread_mutex_lock(&l->omx); double own = l->own_ppm; pthread_mutex_unlock(&l->omx);
+    /* ppm: the sender's clock (ours taken off), rxppm: ours */
     int o = snprintf(out, n, "mode=%s;vis=%d;utc=%s;lines=%d/%d;sync=%d;offset=%.0f;ppm=%.0f",
-                     st->mode->id, st->vis, ts, st->lines, st->lines_total, st->syncs, st->offset, st->clock_ppm);
+                     st->mode->id, st->vis, ts, st->lines, st->lines_total, st->syncs, st->offset,
+                     isnan(own) ? st->clock_ppm : st->clock_ppm - own);
+    if (!isnan(own) && o > 0 && (size_t)o < n) o += snprintf(out + o, n - o, ";rxppm=%.0f", own);
     if (!isnan(st->snr) && o > 0 && (size_t)o < n) o += snprintf(out + o, n - o, ";snr=%.1f", st->snr);
     if (info && info->nlq && o > 0 && (size_t)o + 8 < n) {      /* signal/noise of every line */
         o += snprintf(out + o, n - o, ";q=");
@@ -678,6 +683,7 @@ live *live_new(double fs, const char *save_dir)
     l->ring = calloc(RING, sizeof(float));
     l->dm = fmdemod_new(fs);
     l->st.snr = NAN;
+    l->own_ppm = NAN;
     l->ts = ts_new(fs, fmdemod_delay(l->dm));
     pthread_mutex_init(&l->rmx, NULL);
     pthread_mutex_init(&l->omx, NULL);
@@ -717,6 +723,7 @@ void live_push(live *l, const float *x, int n)
 }
 
 void live_mute(live *l, int on) { atomic_store(&l->mute, on); }
+void live_set_clock(live *l, double ppm) { pthread_mutex_lock(&l->omx); l->own_ppm = ppm; pthread_mutex_unlock(&l->omx); }
 void live_set_nr(live *l, int on) { atomic_store(&l->nr, on); }
 void live_stop(live *l) { atomic_store(&l->stop_req, 1); }
 void live_reset(live *l) { atomic_store(&l->reset_req, 1); }

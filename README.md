@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.11). Tested with recordings and simulated channels;
+**Status:** development version (M0.12). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ![Main window](sstv_next_main_window.png)
@@ -118,6 +118,14 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     picture, and `Nx` on combined ones.
   - **Signal report** (SNR, offset, clock): measured on the sync pulses of every line. The
     SNR is in 2.5 kHz bandwidth (as in WSJT-X / fldigi), so it can be below 0 dB.
+  - **Own sound card clock**: the slant of a picture is the sender's clock error *and*
+    ours. The program learns its own from the good receptions (the median of the last 16;
+    most stations are close to right, so what all of them seem to have is ours) and takes
+    it off: after 5 pictures the status shows *clock* (the sender's) instead of *slant*.
+    The **Clock** button next to FSK ID shows the value; switched on (**Clock fix**) the
+    transmission is resampled by it, so the others receive straight pictures at the right
+    speed (the same sound card is assumed for receiving and transmitting). Right click on
+    it forgets the measurements (e.g. after changing the sound card).
   - **The same picture again**: the last 8 analog receptions (of the last 3 hours) are kept.
     When a new one shows the same picture (in the same mode), all copies are aligned
     (a copy started without VIS or a partial one sits some lines away) and merged: every

@@ -39,7 +39,7 @@
 #include "rsfile.h"
 #include "fskid.h"
 
-#define APP        "SSTV Next M0.11"
+#define APP        "SSTV Next M0.12"
 #define AUDIO_RATE 11025
 #define W0 1280
 #define H0 820
@@ -79,6 +79,60 @@ static char view_meta[2048] = "";      /* its reception data (PNG text), "" if n
 /* signal report for the reply (%S %O %K %Q): the last analog picture received */
 typedef struct { int valid; double snr, offset, ppm; int syncs, lines; char call[16]; } Report;
 static Report last_rep;
+
+/* Own sound card clock (ppm, the decoder's sign): the median slant of the last good
+ * pictures. Most stations are close to right, so what they all seem to have is ours.
+ * NAN until 5 pictures were measured. */
+#define CLK_MIN 5
+static double own_clock(void)
+{
+    if (cfg.nclk < CLK_MIN) return NAN;
+    double v[16];
+    int n = cfg.nclk;
+    memcpy(v, cfg.clk, n * sizeof(double));
+    for (int i = 1; i < n; i++) { double t = v[i]; int k = i - 1; while (k >= 0 && v[k] > t) { v[k + 1] = v[k]; k--; } v[k + 1] = t; }
+    return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+}
+
+/* a good analog reception: its slant goes into the history */
+static void clock_learn(const live_status *st)
+{
+    if (!st->mode || st->lines < sstv_nlines(st->mode) / 2 || st->syncs < st->lines * 6 / 10) return;
+    if (!isnan(st->snr) && st->snr < 6) return;
+    if (fabs(st->clock_ppm) > 8000) return;
+    if (cfg.nclk == 16) { memmove(cfg.clk, cfg.clk + 1, 15 * sizeof(double)); cfg.nclk--; }
+    cfg.clk[cfg.nclk++] = st->clock_ppm;
+    config_save();
+    live_set_clock(lv, own_clock());
+}
+
+/* our transmission at the right speed although the sound card's clock is off:
+   resampled by the own clock error (windowed sinc) */
+static float *clock_fix(float *x, long *n)
+{
+    double e = own_clock();
+    if (!cfg.txclk || isnan(e) || fabs(e) < 20) return x;
+    double k = 1 + e * 1e-6;                     /* we play k times slower than we think */
+    long m = (long)(*n / k);
+    float *y = malloc(sizeof(float) * (m > 0 ? m : 1));
+    if (!y) return x;
+    const int H = 8;
+    for (long j = 0; j < m; j++) {
+        double t = j * k;
+        long i0 = (long)floor(t);
+        double s = 0;
+        for (long i = i0 - H + 1; i <= i0 + H; i++) {
+            if (i < 0 || i >= *n) continue;
+            double d = t - i, w = d == 0 ? 1 : sin(M_PI * d) / (M_PI * d);
+            w *= 0.42 + 0.5 * cos(M_PI * d / H) + 0.08 * cos(2 * M_PI * d / H);   /* Blackman */
+            s += x[i] * w;
+        }
+        y[j] = (float)s;
+    }
+    free(x);
+    *n = m;
+    return y;
+}
 static int rx_force = -1;             /* -1: auto, else index into the mode table */
 #define NMODEIDS sstv_mode_count()
 #define MODE_ID(i) (sstv_mode_at(i)->id)
@@ -457,6 +511,7 @@ static void tx_session(void)
     image_free(img);
     if (kind == 2) fix_idx = -1;                  /* answered */
     if (!x) { tx_set_msg("TX: cannot code the picture"); atomic_store(&tx_req, 0); atomic_store(&tx_state, 0); return; }
+    x = clock_fix(x, &n);
     atomic_store(&tx_total, n); atomic_store(&tx_done, 0);
     char err[128] = "";
     audio_out *ao = audio_out_open(tx_device(), tx_wav, AUDIO_RATE, err, sizeof err);
@@ -766,7 +821,11 @@ static void draw_rx_status(void)
             snprintf(v, sizeof v, "%d / %d", s->lines, H);           x += kv(x, ty, "lines", v, c.text);
             if (s->state == LIVE_RX) { snprintf(v, sizeof v, "%d", s->syncs); x += kv(x, ty, "sync", v, c.text); }
             if (!isnan(s->snr)) { snprintf(v, sizeof v, "%.0f dB", s->snr > 30 ? 30 : s->snr); x += kv(x, ty, "SNR", v, s->snr < 5 ? c.yellow : c.text); }
-            snprintf(v, sizeof v, "%+.0f ppm", s->clock_ppm);          x += kv(x, ty, "slant", v, c.text);
+            {   /* the sender's clock: ours taken off when known */
+                double own = own_clock();
+                snprintf(v, sizeof v, "%+.0f ppm", isnan(own) ? s->clock_ppm : s->clock_ppm - own);
+                x += kv(x, ty, isnan(own) ? "slant" : "clock", v, c.text);
+            }
             snprintf(v, sizeof v, "%+.0f Hz", s->offset);              x += kv(x, ty, "offset", v, fabs(s->offset) > 50 ? c.yellow : c.text);
             if (s->state != LIVE_RX) ui_text(F_SMALL, LX + LPW - ui_text_w(F_SMALL, "last picture") - 4, ty, "last picture", c.muted);
         } else {
@@ -897,7 +956,15 @@ static void draw_tx_panel(void)
     if (!tx_is_drm() && !on) {
         ui_text(F_SMALL, cx, y + 205, "ID", c.muted);
         button(cx + 44, y + 187, 120, 26, cfg.fskid ? "FSK ID on" : "FSK ID off", cfg.fskid);
-        if (cfg.fskid) ui_text_fit(F_SMALL, cx + 172, y + 205, "callsign after the picture", c.muted, cw - 172);
+    }
+    if (!on) {     /* own sound card clock: measured on received pictures, corrects the transmission */
+        char b[40];
+        double e = own_clock();
+        int bx = cx + 172, bw = tx_is_drm() ? 0 : cw - 172;   /* analog: next to FSK ID (the DRM row is full) */
+        if (bw >= 90) {
+            if (isnan(e)) { snprintf(b, sizeof b, "Clock: %d/%d pics", cfg.nclk, CLK_MIN); button(bx, y + 187, bw, 26, b, 0); }
+            else { snprintf(b, sizeof b, "Clock %s %+.0f", cfg.txclk ? "fix" : "off", e); button(bx, y + 187, bw, 26, b, cfg.txclk); }
+        }
     }
     if (tx_is_drm() && !on) {
         /* digital settings: robustness, QAM, protection, bandwidth / picture size, JPEG size */
@@ -1820,6 +1887,14 @@ static int right_click(int x, int y, int btn)
         if (!tx_is_drm() && !tx_active() && btn == 1 && hit(x, y, cx + 44, TXP_Y + 187, 120, 26)) {
             cfg.fskid = !cfg.fskid; config_save(); draw_tx_panel(); return 1;
         }
+        {   /* own clock correction on/off (right click: forget the measurements) */
+            int bx = cx + 172, bw = tx_is_drm() ? 0 : cw - 172;   /* analog: next to FSK ID (the DRM row is full) */
+            if (!tx_active() && bw >= 90 && (btn == 1 || btn == 3) && hit(x, y, bx, TXP_Y + 187, bw, 26)) {
+                if (btn == 3) { cfg.nclk = 0; cfg.txclk = 0; live_set_clock(lv, NAN); }
+                else if (!isnan(own_clock())) cfg.txclk = !cfg.txclk;
+                config_save(); draw_tx_panel(); return 1;
+            }
+        }
         if (tx_is_drm() && !tx_active() && btn >= 1 && btn <= 5 && btn != 2 && y >= TXP_Y + 185) {
             int d = (btn == 3 || btn == 4) ? -1 : 1, hitp = 1, size = 0;
             if (hit(x, y, cx + 44, TXP_Y + 187, 34, 26)) cfg.drm_rob = (cfg.drm_rob + 3 + d) % 3;
@@ -1935,6 +2010,7 @@ int main(int argc, char **argv)
     }
     mkdir_p(cfg.rx_dir); mkdir_p(cfg.tx_dir);
     lv = live_new(AUDIO_RATE, cfg.rx_dir);
+    if (lv) live_set_clock(lv, own_clock());
     live_set_nr(lv, cfg.nr);
     apply_rx_force();
     gal_load_dir();
@@ -2027,7 +2103,9 @@ int main(int argc, char **argv)
         int newpic = live_snapshot(lv, &rx_gen, &ni, &st);
         int started = st.state == LIVE_RX && rx_st.state != LIVE_RX;
         if (st.state != LIVE_RX && rx_st.state == LIVE_RX && st.mode) {      /* analog picture finished */
-            last_rep.valid = 1; last_rep.snr = st.snr; last_rep.offset = st.offset; last_rep.ppm = st.clock_ppm;
+            clock_learn(&st);
+            last_rep.valid = 1; last_rep.snr = st.snr; last_rep.offset = st.offset;
+            last_rep.ppm = isnan(own_clock()) ? st.clock_ppm : st.clock_ppm - own_clock();
             last_rep.syncs = st.syncs; last_rep.lines = st.lines_total; last_rep.call[0] = 0;
             if (!view_img) { tx_render(); if (!(rig_dlg || log_dlg || audio_menu) && !edit_mode) draw_tx_panel(); }   /* %S %O %K %Q in the reply */
         }
