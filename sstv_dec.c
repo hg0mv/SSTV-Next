@@ -14,6 +14,8 @@
 #include "demod.h"
 #include "rx.h"
 #include "tones.h"
+#include "imgio.h"
+#include "combine.h"
 
 static void usage(void)
 {
@@ -22,6 +24,7 @@ static void usage(void)
         "  -m mode    force a mode (reception without VIS)\n"
         "  -o prefix  output file name prefix (default: sstv) -> sstv_1.ppm ...\n"
         "  -r         raw picture: QRM speck filter off\n"
+        "  -P         PNG output with the reception data (for sstv_combine)\n"
 
         "Modes:\n");
     sstv_list_modes(stderr);
@@ -31,14 +34,15 @@ int main(int argc, char **argv)
 {
     const sstv_mode *forced = NULL;
     const char *prefix = "sstv";
-    int c, flags = SSTV_NR;
-    while ((c = getopt(argc, argv, "m:o:rh")) != -1) {
+    int c, flags = SSTV_NR, png = 0;
+    while ((c = getopt(argc, argv, "m:o:rPh")) != -1) {
         switch (c) {
         case 'm': forced = sstv_mode_by_id(optarg);
                   if (!forced) { fprintf(stderr, "Unknown mode: %s\n", optarg); usage(); return 1; }
                   break;
         case 'o': prefix = optarg; break;
         case 'r': flags &= ~SSTV_NR; break;
+        case 'P': png = 1; break;
         default:  usage(); return 1;
         }
     }
@@ -122,11 +126,19 @@ int main(int argc, char **argv)
         sstv_rxinfo info;
         image *img = sstv_decode_ex(&fb, m, t0, off, flags, &info);
         char name[512];
-        snprintf(name, sizeof name, "%s_%d.ppm", prefix, ++count);
-        ppm_write(name, img);
+        snprintf(name, sizeof name, "%s_%d.%s", prefix, ++count, png ? "png" : "ppm");
+        if (png) {
+            char meta[1400], q[1100] = "";
+            cmb_q_encode(info.lq, info.nlq, q, sizeof q);
+            snprintf(meta, sizeof meta, "mode=%s;sync=%d;offset=%.0f;ppm=%.0f;snr=%.1f;q=%s",
+                     m->id, info.syncs, info.offset, info.clock_ppm, isnan(info.snr) ? -99.0 : info.snr, q);
+            img_save_png_meta(name, img, meta);
+        } else ppm_write(name, img);
         image_free(img);
-        printf("  sync: %d/%d lines, line %.3f ms, clock error %+.0f ppm, offset %+.0f Hz -> %s\n",
-               info.syncs, sstv_nlines(m), info.line_ms, info.clock_ppm, info.offset, name);
+        char sn[24] = "";
+        if (!isnan(info.snr)) snprintf(sn, sizeof sn, ", SNR %.0f dB", info.snr);
+        printf("  sync: %d/%d lines, line %.3f ms, clock error %+.0f ppm, offset %+.0f Hz%s -> %s\n",
+               info.syncs, sstv_nlines(m), info.line_ms, info.clock_ppm, info.offset, sn, name);
         from = (long)info.end;
         if (from >= n) break;
     }

@@ -43,6 +43,7 @@ static int load_file(const char *path, int ours)
         else if (!strcmp(k, "rxmode")) snprintf(cfg.rx_mode, sizeof cfg.rx_mode, "%.12s", v);
         else if (!strcmp(k, "nr")) cfg.nr = atoi(v) ? 1 : 0;
         else if (!strcmp(k, "fskid")) cfg.fskid = atoi(v);
+        else if (!strcmp(k, "tpl_report")) cfg.tpl_report = atoi(v);
         else if (!strcmp(k, "template")) snprintf(cfg.tpl, sizeof cfg.tpl, "%.46s", v);
         else if (!strcmp(k, "drm")) sscanf(v, "%d,%d,%d,%d,%d,%d,%d", &cfg.drm_rob, &cfg.drm_qam, &cfg.drm_prot, &cfg.drm_so, &cfg.drm_size, &cfg.drm_kb, &cfg.drm_rs);
     }
@@ -78,6 +79,7 @@ void config_save(void)
     fprintf(f, "audio=%s\nrxdir=%s\ntxdir=%s\noverlay=%s\ntxmode=%s\nrxmode=%s\nnr=%d\ntemplate=%s\n",
             cfg.audio, cfg.rx_dir, cfg.tx_dir, cfg.overlay, cfg.tx_mode, cfg.rx_mode, cfg.nr, cfg.tpl);
     fprintf(f, "fskid=%d\n", cfg.fskid);
+    fprintf(f, "tpl_report=%d\n", cfg.tpl_report);
     fprintf(f, "drm=%d,%d,%d,%d,%d,%d,%d\n", cfg.drm_rob, cfg.drm_qam, cfg.drm_prot, cfg.drm_so, cfg.drm_size, cfg.drm_kb, cfg.drm_rs);
     fclose(f);
 }

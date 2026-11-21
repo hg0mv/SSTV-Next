@@ -42,6 +42,8 @@ typedef struct {
     const char *my_call, *his_call, *rst;
     double mhz;                 /* 0: unknown */
     time_t now;
+    /* signal report of the picture being answered ("" or NULL: unknown) */
+    const char *snr, *offset, *clock, *report;
 } tpl_macros;
 
 /* fonts */
@@ -66,6 +68,7 @@ int  tpl_save(const tpl *t, const char *dir);
 int  tpl_load(tpl *t, const char *dir, const char *name);
 int  tpl_list(const char *dir, char names[][48], int max);   /* sorted */
 int  tpl_remove(const char *dir, const char *name);
+void tpl_make_report(const char *dir);
 void tpl_make_defaults(const char *dir, const char *old_overlay);   /* when the folder is empty */
 
 #endif

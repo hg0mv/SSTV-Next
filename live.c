@@ -22,12 +22,15 @@
 #include "demod.h"
 #include "rx.h"
 #include "imgio.h"
+#include "combine.h"
 #include "drm_rx.h"
 #include "jp2.h"
 #include "fskid.h"
 
 #define RING        (1 << 19)     /* capture -> engine, ~47 s at 11025 Hz */
 #define NSAVED      8
+#define NREC        8           /* receptions kept for combining */
+#define REC_MAX_AGE (3 * 3600)  /* s */
 
 struct live {
     double fs;
@@ -46,6 +49,13 @@ struct live {
     float  *T;           /* rows of TS_NB powers, row i = absolute row tbase + i */
     long    tn, tcap, tbase;
     long    abs0;        /* absolute index of f[0] */
+    /* the last saved analog picture: the FSK ID after it is added to its file */
+    image  *last_img;
+    char    last_path[300], last_meta[1600];
+    /* recent analog receptions: the same picture received again is combined with them */
+    struct { image *img; char mode[16], path[300]; time_t t; float *rq; } rec[NREC];
+    int     nrec;
+    time_t  last_saved;
     float  *f;
     double *P, *Q;
     long    n, cap;
@@ -169,7 +179,106 @@ static void publish(live *l, image *img, const live_status *st)
     pthread_mutex_unlock(&l->omx);
 }
 
-static void save_image(live *l, const image *img, const sstv_mode *m, int partial)
+/* reception data stored in the PNG (imgio: tEXt "SSTVNext") */
+static void make_meta(live *l, const live_status *st, const sstv_rxinfo *info, char *out, size_t n)
+{
+    struct tm g; gmtime_r(&l->started, &g);
+    char ts[32]; strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &g);
+    int o = snprintf(out, n, "mode=%s;vis=%d;utc=%s;lines=%d/%d;sync=%d;offset=%.0f;ppm=%.0f",
+                     st->mode->id, st->vis, ts, st->lines, st->lines_total, st->syncs, st->offset, st->clock_ppm);
+    if (!isnan(st->snr) && o > 0 && (size_t)o < n) o += snprintf(out + o, n - o, ";snr=%.1f", st->snr);
+    if (info && info->nlq && o > 0 && (size_t)o + 8 < n) {      /* signal/noise of every line */
+        o += snprintf(out + o, n - o, ";q=");
+        if ((size_t)o < n) cmb_q_encode(info->lq, info->nlq, out + o, n - o);
+    }
+}
+
+static void push_saved(live *l, const char *path)
+{
+    pthread_mutex_lock(&l->omx);
+    snprintf(l->saved[l->sv_head % NSAVED], sizeof l->saved[0], "%s", path);
+    l->sv_head++;
+    if (l->sv_head - l->sv_tail > NSAVED) l->sv_tail = l->sv_head - NSAVED;
+    pthread_mutex_unlock(&l->omx);
+}
+
+/* The same picture received before (ISS events, nets: sent again and again)? Then all
+ * copies are combined into <first copy>_combined.png, which gets better with every
+ * reception, and shown. The new reception is kept for the next time. */
+static void combine_recent(live *l, const image *img, const sstv_mode *m, const char *path, const char *meta)
+{
+    time_t now = time(NULL);
+    image *use[NREC + 1];
+    const float *uq[NREC + 1];
+    int dx[NREC + 1], dy[NREC + 1], idx[NREC + 1], n = 0;
+    use[0] = (image *)img; idx[0] = -1; dx[0] = dy[0] = 0;
+    float *rq = NULL;
+    char q[1100];
+    if (img_meta_get(meta, "q", q, sizeof q)) {
+        rq = malloc(img->h * sizeof(float));
+        if (!cmb_q_rows(q, img->h, 0, rq)) { free(rq); rq = NULL; }
+    }
+    uq[0] = rq;
+    n = 1;
+    for (int i = 0; i < l->nrec; i++) {
+        if (strcmp(l->rec[i].mode, m->id) || now - l->rec[i].t > REC_MAX_AGE) continue;
+        int x, y; double sc;
+        if (!cmb_match(img, l->rec[i].img, &x, &y, &sc)) continue;
+        use[n] = l->rec[i].img; uq[n] = l->rec[i].rq; dx[n] = x; dy[n] = y; idx[n] = i; n++;
+    }
+    if (n >= 2) {
+        /* the frame of the copy with the most rows (a partial or late copy fits into it) */
+        int r = 0, best = -1;
+        for (int i = 0; i < n; i++) { int k = cmb_rows(use[i]); if (k > best) { best = k; r = i; } }
+        int rx = dx[r], ry = dy[r];
+        image *u2[NREC + 1]; const float *q2[NREC + 1]; int dx2[NREC + 1], dy2[NREC + 1], k = 0, haveq = 0;
+        u2[k] = use[r]; q2[k] = uq[r]; dx2[k] = dy2[k] = 0; k++;
+        for (int i = 0; i < n; i++) {
+            if (i == r) continue;
+            u2[k] = use[i]; q2[k] = uq[i]; dx2[k] = dx[i] - rx; dy2[k] = dy[i] - ry; k++;
+        }
+        for (int i = 0; i < k; i++) haveq += q2[i] != NULL;
+        image *out = cmb_merge_q(u2, dx2, dy2, haveq == k ? q2 : NULL, k);
+        /* name: the earliest copy's file + _combined */
+        const char *first = path;
+        time_t ft = now;
+        for (int i = 1; i < n; i++) if (l->rec[idx[i]].t < ft) { ft = l->rec[idx[i]].t; first = l->rec[idx[i]].path; }
+        char cp[320];
+        snprintf(cp, sizeof cp, "%s", first);
+        char *dot = strstr(cp, "_part.png");
+        if (!dot) dot = strstr(cp, ".png");
+        if (dot) snprintf(dot, cp + sizeof cp - dot, "_combined.png");
+        struct tm g; gmtime_r(&now, &g);
+        char ts[32], cm[200];
+        strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &g);
+        snprintf(cm, sizeof cm, "mode=%s;utc=%s;combined=%d", m->id, ts, n);
+        char msg[120];
+        if (img_save_png_meta(cp, out, cm) == 0) {
+            push_saved(l, cp);
+            snprintf(msg, sizeof msg, "Received again: %d copies combined -> %.70s", n, strrchr(cp, '/') ? strrchr(cp, '/') + 1 : cp);
+            live_status st;
+            pthread_mutex_lock(&l->omx); st = l->st; pthread_mutex_unlock(&l->omx);
+            st.combined = n;
+            publish(l, out, &st);                   /* show the combined picture (publish owns it) */
+            set_msg(l, msg);
+        } else image_free(out);
+    }
+    /* keep this reception (the oldest one goes) */
+    if (l->nrec == NREC) {
+        image_free(l->rec[0].img); free(l->rec[0].rq);
+        memmove(&l->rec[0], &l->rec[1], (NREC - 1) * sizeof l->rec[0]);
+        l->nrec--;
+    }
+    int j = l->nrec++;
+    l->rec[j].img = image_new(img->w, img->h);
+    memcpy(l->rec[j].img->px, img->px, (size_t)img->w * img->h * 3);
+    snprintf(l->rec[j].mode, sizeof l->rec[j].mode, "%s", m->id);
+    snprintf(l->rec[j].path, sizeof l->rec[j].path, "%s", path);
+    l->rec[j].t = now;
+    l->rec[j].rq = rq;
+}
+
+static void save_image(live *l, const image *img, const sstv_mode *m, int partial, const char *meta)
 {
     char dir[256];
     pthread_mutex_lock(&l->omx); snprintf(dir, sizeof dir, "%s", l->dir); pthread_mutex_unlock(&l->omx);
@@ -179,13 +288,18 @@ static void save_image(live *l, const image *img, const sstv_mode *m, int partia
     strftime(name, sizeof name, "%Y%m%d_%H%M%SZ", &g);
     snprintf(path, sizeof path, "%.200s/%s_%s%s.png", dir, name, m->id, partial ? "_part" : "");
     char msg[120];
-    if (img_save_png(path, img) == 0) {
-        pthread_mutex_lock(&l->omx);
-        snprintf(l->saved[l->sv_head % NSAVED], sizeof l->saved[0], "%s", path);
-        l->sv_head++;
-        if (l->sv_head - l->sv_tail > NSAVED) l->sv_tail = l->sv_head - NSAVED;
-        pthread_mutex_unlock(&l->omx);
+    if (img_save_png_meta(path, img, meta) == 0) {
+        push_saved(l, path);
         snprintf(msg, sizeof msg, "Saved %.100s", strrchr(path, '/') + 1);
+        image_free(l->last_img);
+        l->last_img = image_new(img->w, img->h);
+        memcpy(l->last_img->px, img->px, (size_t)img->w * img->h * 3);
+        snprintf(l->last_path, sizeof l->last_path, "%s", path);
+        snprintf(l->last_meta, sizeof l->last_meta, "%s", meta ? meta : "");
+        l->last_saved = time(NULL);
+        set_msg(l, msg);
+        combine_recent(l, img, m, path, meta ? meta : "");
+        return;
     } else {
         snprintf(msg, sizeof msg, "Cannot save the image to %.90s", dir);
     }
@@ -203,7 +317,7 @@ static void start_rx(live *l, const sstv_mode *m, double t0, double off, int vis
     l->started = time(NULL);
     l->last_work = 0;
     live_status st; memset(&st, 0, sizeof st);
-    st.state = LIVE_RX; st.mode = m; st.vis = vis; st.offset = isnan(off) ? 0 : off;
+    st.state = LIVE_RX; st.mode = m; st.vis = vis; st.offset = isnan(off) ? 0 : off; st.snr = NAN;
     st.lines_total = sstv_nlines(m);
     image *blank = image_new(m->width, m->height);
     publish(l, blank, &st);
@@ -229,9 +343,18 @@ static void finish_rx(live *l, int reason)    /* 0 complete, 1 signal lost, 2 st
     if (got > sstv_nlines(m)) got = sstv_nlines(m);
     if (got < 0) got = 0;
     st.state = LIVE_IDLE; st.lines = got; st.syncs = info.syncs; st.clock_ppm = info.clock_ppm; st.offset = info.offset;
-    publish(l, img, &st);
+    st.snr = info.snr;
     int partial = got < sstv_nlines(m);
-    if (got >= sstv_nlines(m) / 5) save_image(l, img, m, partial);
+    if (partial && reason == 1) {                    /* after the last sync pulse there was only noise */
+        int r0 = got * m->rows;
+        if (r0 < img->h) memset(img->px + (size_t)r0 * img->w * 3, 0, (size_t)(img->h - r0) * img->w * 3);
+    }
+    image *keep = image_new(img->w, img->h);          /* publish() takes img over */
+    memcpy(keep->px, img->px, (size_t)img->w * img->h * 3);
+    publish(l, img, &st);
+    char meta[1600];
+    make_meta(l, &st, &info, meta, sizeof meta);
+    if (got >= sstv_nlines(m) / 5) save_image(l, keep, m, partial, meta);
     else set_msg(l, reason == 2 ? "Stopped - too little received, not saved" : "Signal lost - too little received, not saved");
     /* look for the next image right after what was used */
     long next = reason == 0 ? (long)info.end : (long)(start + got * bb);
@@ -239,6 +362,7 @@ static void finish_rx(live *l, int reason)    /* 0 complete, 1 signal lost, 2 st
     if (next < 0) next = 0;
     l->search_from = next;
     l->sync_from = next;
+    image_free(keep);
 }
 
 static void work_idle(live *l)
@@ -315,6 +439,7 @@ static void work_rx(live *l)
     if (got > H) got = H;
     if (got < 0) got = 0;
     st.lines = got; st.syncs = info.syncs; st.clock_ppm = info.clock_ppm; st.offset = info.offset;
+    st.snr = info.snr;
     publish(l, img, &st);
 
     if (l->vchk) {
@@ -360,7 +485,18 @@ static void heard(live *l, const char *call, int src)
     set_msg(l, m);
 }
 
-static void fskid_cb(void *user, const char *call) { heard(user, call, 1); }
+/* the FSK ID right after a picture belongs to it: the callsign goes into its file too */
+static void fskid_cb(void *user, const char *call)
+{
+    live *l = user;
+    heard(l, call, 1);
+    if (l->last_img && l->last_path[0] && time(NULL) - l->last_saved <= 20 && !strstr(l->last_meta, ";call=")) {
+        size_t o = strlen(l->last_meta);
+        snprintf(l->last_meta + o, sizeof l->last_meta - o, ";call=%s", call);
+        img_save_png_meta(l->last_path, l->last_img, l->last_meta);
+        push_saved(l, l->last_path);               /* let the gallery reload it */
+    }
+}
 
 /* a complete picture (or file) arrived */
 static void drm_done(void *user, const char *name, const uint8_t *data, long len, int partial)
@@ -541,6 +677,7 @@ live *live_new(double fs, const char *save_dir)
     l->fs = fs;
     l->ring = calloc(RING, sizeof(float));
     l->dm = fmdemod_new(fs);
+    l->st.snr = NAN;
     l->ts = ts_new(fs, fmdemod_delay(l->dm));
     pthread_mutex_init(&l->rmx, NULL);
     pthread_mutex_init(&l->omx, NULL);
@@ -562,6 +699,8 @@ void live_free(live *l)
     fmdemod_free(l->dm);
     ts_free(l->ts);
     free(l->T);
+    image_free(l->last_img);
+    for (int i = 0; i < l->nrec; i++) { image_free(l->rec[i].img); free(l->rec[i].rq); }
     drm_rx_free(&l->drm);
     fskid_free(&l->fid);
     free(l->ring); free(l->f); free(l->Y); free(l->P); free(l->Q);

@@ -212,6 +212,10 @@ void tpl_expand(const char *src, const tpl_macros *m, char *out, size_t n)
             case 'R': case 'r': ins = m && m->rst ? m->rst : ""; break;
             case 'T': case 't': strftime(tmp, sizeof tmp, "%H:%M", &g); ins = tmp; break;
             case 'D': case 'd': strftime(tmp, sizeof tmp, "%Y-%m-%d", &g); ins = tmp; break;
+            case 'S': case 's': ins = m && m->snr ? m->snr : ""; break;
+            case 'O': case 'o': ins = m && m->offset ? m->offset : ""; break;
+            case 'K': case 'k': ins = m && m->clock ? m->clock : ""; break;
+            case 'Q': case 'q': ins = m && m->report ? m->report : ""; break;
             case 'F': case 'f': if (m && m->mhz > 0) snprintf(tmp, sizeof tmp, "%.3f", m->mhz); else tmp[0] = 0; ins = tmp; break;
             case '%': ins = "%"; break;
             }
@@ -581,6 +585,22 @@ int tpl_remove(const char *dir, const char *name)
     char p[320];
     path_of(p, sizeof p, dir, name);
     return unlink(p);
+}
+
+/* reply with the signal report of the received picture (%Q) */
+void tpl_make_report(const char *dir)
+{
+    tpl t; tobj *o;
+    tpl_init(&t, "Report");
+    o = tpl_add(&t, OBJ_RECT); o->x = 0; o->y = 0.66; o->w = 1; o->h = 0.34; rgb(o->fill, 0, 0, 0); o->alpha = 60; o->lw = 0;
+    o = tpl_add(&t, OBJ_TEXT); o->x = 0.035; o->y = 0.68; o->h = 0.11; snprintf(o->text, sizeof o->text, "%%C de %%M");
+    o = tpl_add(&t, OBJ_TEXT); o->x = 0.035; o->y = 0.805; o->h = 0.068; rgb(o->fill, 120, 230, 255); o->lw = 2;
+    snprintf(o->text, sizeof o->text, "%%Q");
+    o = tpl_add(&t, OBJ_TEXT); o->x = 0.035; o->y = 0.895; o->h = 0.075; rgb(o->fill, 255, 255, 255); o->lw = 2;
+    snprintf(o->text, sizeof o->text, "UR %%R   TNX 73!");
+    o = tpl_add(&t, OBJ_TEXT); o->x = 0.70; o->y = 0.025; o->h = 0.065; rgb(o->fill, 255, 255, 255); o->lw = 2;
+    snprintf(o->text, sizeof o->text, "%%T UTC");
+    tpl_save(&t, dir); tpl_clear(&t);
 }
 
 void tpl_make_defaults(const char *dir, const char *old_overlay)

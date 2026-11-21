@@ -5,6 +5,7 @@
 /sstv_enc
 /drm_enc
 /drm_dec
+/sstv_combine
 /win/obj/
 /win/dist/
 # third-party Windows binaries (downloaded from the official releases)

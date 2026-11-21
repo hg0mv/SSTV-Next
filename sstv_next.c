@@ -39,7 +39,7 @@
 #include "rsfile.h"
 #include "fskid.h"
 
-#define APP        "SSTV Next M0.10"
+#define APP        "SSTV Next M0.11"
 #define AUDIO_RATE 11025
 #define W0 1280
 #define H0 820
@@ -75,6 +75,10 @@ static unsigned rx_gen = 0;
 static live_status rx_st;
 static image *view_img = NULL;        /* a saved picture opened from the gallery */
 static char view_name[200] = "";
+static char view_meta[2048] = "";      /* its reception data (PNG text), "" if none */
+/* signal report for the reply (%S %O %K %Q): the last analog picture received */
+typedef struct { int valid; double snr, offset, ppm; int syncs, lines; char call[16]; } Report;
+static Report last_rep;
 static int rx_force = -1;             /* -1: auto, else index into the mode table */
 #define NMODEIDS sstv_mode_count()
 #define MODE_ID(i) (sstv_mode_at(i)->id)
@@ -83,7 +87,7 @@ static int rx_force = -1;             /* -1: auto, else index into the mode tabl
 #define NGAL 24
 #define TW 128
 #define TH 102
-typedef struct { char path[300]; image *thumb; } GalItem;
+typedef struct { char path[300]; image *thumb; char snr[12]; } GalItem;
 static GalItem gal[NGAL];
 static int ngal = 0, gal_scroll = 0;
 
@@ -304,10 +308,44 @@ static image *test_card(void)
     return im;
 }
 
+/* the report for %S %O %K %Q: the picture being viewed (if it has reception data), else
+   the last analog picture received */
+static int report_get(Report *r)
+{
+    if (view_img && view_meta[0]) {
+        char v[32];
+        memset(r, 0, sizeof *r);
+        r->snr = img_meta_get(view_meta, "snr", v, sizeof v) ? atof(v) : NAN;
+        r->offset = img_meta_get(view_meta, "offset", v, sizeof v) ? atof(v) : NAN;
+        r->ppm = img_meta_get(view_meta, "ppm", v, sizeof v) ? atof(v) : NAN;
+        if (img_meta_get(view_meta, "sync", v, sizeof v)) r->syncs = atoi(v);
+        if (img_meta_get(view_meta, "lines", v, sizeof v)) { char *sl = strchr(v, '/'); r->lines = sl ? atoi(sl + 1) : 0; }
+        img_meta_get(view_meta, "call", r->call, sizeof r->call);
+        r->valid = 1;
+        return 1;
+    }
+    *r = last_rep;
+    return r->valid;
+}
+
 static void macros_now(tpl_macros *m)
 {
+    static char snr[16], off[16], clk[20], rep[80];
     m->my_call = cfg.call; m->his_call = his_call; m->rst = lg_rs;
     m->mhz = atof(lg_freq); m->now = time(NULL);
+    Report r;
+    snr[0] = off[0] = clk[0] = rep[0] = 0;
+    if (report_get(&r)) {
+        if (!isnan(r.snr)) snprintf(snr, sizeof snr, "%.0f dB", r.snr > 30 ? 30 : r.snr);
+        if (!isnan(r.offset)) snprintf(off, sizeof off, "%+.0f Hz", r.offset);
+        if (!isnan(r.ppm)) snprintf(clk, sizeof clk, "%+.0f ppm", r.ppm);
+        int o = 0;                                /* compact: it has to fit one line */
+        if (!isnan(r.snr)) o += snprintf(rep + o, sizeof rep - o, "SNR %.0fdB  ", r.snr > 30 ? 30 : r.snr);
+        if (!isnan(r.offset)) o += snprintf(rep + o, sizeof rep - o, "QRG %+.0fHz  ", r.offset);
+        if (!isnan(r.ppm)) o += snprintf(rep + o, sizeof rep - o, "CLK %+.0fppm", r.ppm);
+        while (o > 0 && rep[o - 1] == ' ') rep[--o] = 0;
+    }
+    m->snr = snr; m->offset = off; m->clock = clk; m->report = rep;
 }
 
 /* background + template -> the picture that goes out (and the preview) */
@@ -527,12 +565,31 @@ static void gal_add(const char *path, int front)
     if (!full) return;
     image *th = img_fit(full, TW, TH);
     image_free(full);
-    if (ngal == NGAL) { image_free(gal[NGAL - 1].thumb); ngal--; }
-    if (front) { memmove(&gal[1], &gal[0], (size_t)ngal * sizeof gal[0]); }
-    GalItem *g = &gal[front ? 0 : ngal];
+    GalItem *g = NULL;
+    for (int i = 0; i < ngal && !g; i++)          /* the same file again (updated): in place, */
+        if (!strcmp(gal[i].path, path)) {           /* a combined picture that got better: to the front */
+            image_free(gal[i].thumb);
+            if (front && strstr(path, "_combined.png")) {
+                memmove(&gal[i], &gal[i + 1], (size_t)(ngal - i - 1) * sizeof gal[0]);
+                ngal--;
+                break;
+            }
+            g = &gal[i];
+        }
+    if (!g) {
+        if (ngal == NGAL) { image_free(gal[NGAL - 1].thumb); ngal--; }
+        if (front) { memmove(&gal[1], &gal[0], (size_t)ngal * sizeof gal[0]); }
+        g = &gal[front ? 0 : ngal];
+        ngal++;
+    }
     snprintf(g->path, sizeof g->path, "%s", path);
     g->thumb = th;
-    ngal++;
+    g->snr[0] = 0;
+    char meta[2048], v[16];
+    if (img_png_meta(path, meta, sizeof meta)) {
+        if (img_meta_get(meta, "combined", v, sizeof v)) snprintf(g->snr, sizeof g->snr, "%dx", atoi(v));   /* copies combined */
+        else if (img_meta_get(meta, "snr", v, sizeof v)) snprintf(g->snr, sizeof g->snr, "%.0f dB", atof(v) > 30 ? 30 : atof(v));
+    }
 }
 static void gal_load_dir(void)
 {
@@ -631,7 +688,11 @@ static void draw_picture(void)
         int w = chip(LX + 92, LY + 10, rx_st.drm_info, c.text, c.panel2);
         if (rx_st.drm_call[0]) chip(LX + 100 + w, LY + 10, rx_st.drm_call, c.accent2, c.panel2);
     } else if (rx_st.mode && im) {
-        chip(LX + 12, LY + 10, rx_st.mode->name, c.muted, c.panel2);
+        int w = chip(LX + 12, LY + 10, rx_st.mode->name, c.muted, c.panel2);
+        if (rx_st.combined) {
+            char t[48]; snprintf(t, sizeof t, "COMBINED FROM %d RECEPTIONS", rx_st.combined);
+            chip(LX + 20 + w, LY + 10, t, RGB(255, 255, 255), c.accent);
+        }
     }
     end_buf();
 }
@@ -657,7 +718,16 @@ static void draw_rx_status(void)
         else snprintf(t, sizeof t, "Click: select    drag: move    corner: resize    Del: delete    arrows: nudge    Esc: done");
         ui_text(F_SMALL, LX + 4, y + 31, t, rx_st.state == LIVE_RX ? c.accent2 : c.muted);
     } else if (view_img) {
-        ui_text(F_SMALL, LX + 4, y + 22, "Saved picture - receiving goes on in the background", c.muted);
+        if (view_meta[0]) {             /* reception data stored with the picture */
+            char v[64], t[40];
+            int x = LX + 2, ty = y + 22;
+            if (img_meta_get(view_meta, "call", v, sizeof v)) x += kv(x, ty, "from", v, c.accent2);
+            if (img_meta_get(view_meta, "snr", v, sizeof v)) { double d = atof(v); snprintf(t, sizeof t, "%.0f dB", d > 30 ? 30 : d); x += kv(x, ty, "SNR", t, d < 5 ? c.yellow : c.text); }
+            if (img_meta_get(view_meta, "offset", v, sizeof v)) { snprintf(t, sizeof t, "%+.0f Hz", atof(v)); x += kv(x, ty, "offset", t, fabs(atof(v)) > 50 ? c.yellow : c.text); }
+            if (img_meta_get(view_meta, "ppm", v, sizeof v)) { snprintf(t, sizeof t, "%+.0f ppm", atof(v)); x += kv(x, ty, "clock", t, c.text); }
+            if (img_meta_get(view_meta, "lines", v, sizeof v)) x += kv(x, ty, "lines", v, c.text);
+            if (img_meta_get(view_meta, "combined", v, sizeof v)) x += kv(x, ty, "combined", v, c.accent);
+        } else ui_text(F_SMALL, LX + 4, y + 22, "Saved picture - receiving goes on in the background", c.muted);
         button(LX + LPW - 80, y + 4, 80, 28, "Live", 1);
     } else {
         const live_status *s = &rx_st;
@@ -695,6 +765,7 @@ static void draw_rx_status(void)
             x += ui_text(F_BOLD, x, ty, s->mode->name, s->state == LIVE_RX ? c.accent2 : c.text) + 14;
             snprintf(v, sizeof v, "%d / %d", s->lines, H);           x += kv(x, ty, "lines", v, c.text);
             if (s->state == LIVE_RX) { snprintf(v, sizeof v, "%d", s->syncs); x += kv(x, ty, "sync", v, c.text); }
+            if (!isnan(s->snr)) { snprintf(v, sizeof v, "%.0f dB", s->snr > 30 ? 30 : s->snr); x += kv(x, ty, "SNR", v, s->snr < 5 ? c.yellow : c.text); }
             snprintf(v, sizeof v, "%+.0f ppm", s->clock_ppm);          x += kv(x, ty, "slant", v, c.text);
             snprintf(v, sizeof v, "%+.0f Hz", s->offset);              x += kv(x, ty, "offset", v, fabs(s->offset) > 50 ? c.yellow : c.text);
             if (s->state != LIVE_RX) ui_text(F_SMALL, LX + LPW - ui_text_w(F_SMALL, "last picture") - 4, ty, "last picture", c.muted);
@@ -876,6 +947,12 @@ static void draw_gallery(void)
             int tx = x + 8 + k * (TW + 8), ty = y + 26 + r * (TH + 8);
             put_rgb(gal[i].thumb, tx, ty, TW, TH);
             ui_round_corners(tx, ty, TW, TH, 6, c.panel);
+            if (gal[i].snr[0]) {
+                int bw = ui_text_w(F_SMALLB, gal[i].snr) + 10;
+                int comb = gal[i].snr[strlen(gal[i].snr) - 1] == 'x';
+                ui_rrect(tx + TW - bw - 4, ty + TH - 20, bw, 16, 8, comb ? c.accent : RGB(0, 0, 0), comb ? 0.95 : 0.62);
+                ui_text(F_SMALLB, tx + TW - bw + 1, ty + TH - 8, gal[i].snr, RGB(235, 240, 245));
+            }
             int sel_ = view_img && !strcmp(view_name, strrchr(gal[i].path, '/') + 1);
             if (sel_) { ui_rrect_line(tx - 2, ty - 2, TW + 4, TH + 4, 8, c.accent, 1); ui_rrect_line(tx - 1, ty - 1, TW + 2, TH + 2, 7, c.accent, 1); }
             else ui_rrect_line(tx, ty, TW, TH, 6, RGB(255, 255, 255), 0.08);
@@ -1259,8 +1336,10 @@ static void open_view(const char *path)
     if (!im) return;
     image_free(view_img); view_img = im;
     const char *b = strrchr(path, '/'); snprintf(view_name, sizeof view_name, "%s", b ? b + 1 : path);
+    img_png_meta(path, view_meta, sizeof view_meta);
+    tx_render();                                  /* the report macros follow the viewed picture */
 }
-static void close_view(void) { image_free(view_img); view_img = NULL; view_name[0] = 0; }
+static void close_view(void) { image_free(view_img); view_img = NULL; view_name[0] = 0; view_meta[0] = 0; tx_render(); }
 
 static int log_bar_click(int x, int y, int btn)
 {
@@ -1475,9 +1554,10 @@ static void draw_editor_tools(void)
       else { ui_rrect(x + 46, y + 74, w - 55, 27, 5, c.inset, 1); ui_rrect_line(x + 46, y + 74, w - 55, 27, 5, c.grid, 1);
              ui_text(F_SMALL, x + 53, y + 91, "select a text object to edit it", c.muted); }
       eb_area(x + 46, y + 74, w - 56, 26, B_TEXTF); }
-    { static const char *mac[6][2] = { {"%M","my call"}, {"%C","his call"}, {"%R","RST"}, {"%T","UTC"}, {"%D","date"}, {"%F","MHz"} };
+    { static const char *mac[10][2] = { {"%M","my call"}, {"%C","his"}, {"%R","RST"}, {"%T","UTC"}, {"%D","date"}, {"%F","MHz"},
+                                        {"%S","SNR"}, {"%O","offset"}, {"%K","clock"}, {"%Q","report"} };
       int mx = x + 46;
-      for (int i = 0; i < 6; i++) { mx += ui_text(F_SMALLB, mx, y + 116, mac[i][0], c.cyan) + 4; mx += ui_text(F_SMALL, mx, y + 116, mac[i][1], c.muted) + 12; } }
+      for (int i = 0; i < 10; i++) { mx += ui_text(F_SMALLB, mx, y + 116, mac[i][0], c.cyan) + 3; mx += ui_text(F_SMALL, mx, y + 116, mac[i][1], c.muted) + 9; } }
 
     elabel(x + 10, y + 142, "Font");
     eb(x + 46, y + 124, 26, 26, "<", 0, B_FONT_P);
@@ -1860,6 +1940,7 @@ int main(int argc, char **argv)
     gal_load_dir();
     { const char *h = getenv("HOME"); snprintf(tpl_dir, sizeof tpl_dir, "%.250s/.config/sstvnext/templates", h && *h ? h : "/tmp"); }
     tpl_make_defaults(tpl_dir, cfg.overlay);        /* first start: Call (the old text), CQ, QSO reply */
+    if (!cfg.tpl_report) { tpl_make_report(tpl_dir); cfg.tpl_report = 1; config_save(); }   /* once, also for older installs */
     tpl_refresh_list();
     tpl_select(cfg.tpl[0] ? cfg.tpl : "Call");
     tx_scan(); tx_prepare(1);
@@ -1945,6 +2026,11 @@ int main(int argc, char **argv)
         image *ni = NULL; live_status st;
         int newpic = live_snapshot(lv, &rx_gen, &ni, &st);
         int started = st.state == LIVE_RX && rx_st.state != LIVE_RX;
+        if (st.state != LIVE_RX && rx_st.state == LIVE_RX && st.mode) {      /* analog picture finished */
+            last_rep.valid = 1; last_rep.snr = st.snr; last_rep.offset = st.offset; last_rep.ppm = st.clock_ppm;
+            last_rep.syncs = st.syncs; last_rep.lines = st.lines_total; last_rep.call[0] = 0;
+            if (!view_img) { tx_render(); if (!(rig_dlg || log_dlg || audio_menu) && !edit_mode) draw_tx_panel(); }   /* %S %O %K %Q in the reply */
+        }
         int stchg = memcmp(&st, &rx_st, sizeof st) != 0;
         int drmchg = st.drm_sync != rx_st.drm_sync || strcmp(st.drm_call, rx_st.drm_call) || strcmp(st.drm_info, rx_st.drm_info);
         rx_st = st;
@@ -1959,13 +2045,15 @@ int main(int argc, char **argv)
         }
         if (st.heard_new != seen_heard) {         /* the other station's callsign (FSK ID / DRM) */
             seen_heard = st.heard_new;
+            if (last_rep.valid && !last_rep.call[0]) snprintf(last_rep.call, sizeof last_rep.call, "%s", st.heard_call);
             if (st.heard_call[0] && !his_call[0] && log_focus != 0) {
                 snprintf(his_call, sizeof his_call, "%s", st.heard_call);
                 if (!qso_start) qso_start = time(NULL);
                 char m[80];
                 snprintf(m, sizeof m, "Call %s filled in from the %s", st.heard_call, st.heard_src == 1 ? "FSK ID" : "digital signal");
                 log_say(m, 1);
-                if (!covered && !edit_mode) draw_log_bar();
+                tx_render();                                         /* %C in the reply */
+                if (!covered && !edit_mode) { draw_log_bar(); draw_tx_panel(); }
             }
         }
         if (st.bsr_new != seen_bsr) {             /* a repeat request arrived */

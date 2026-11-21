@@ -35,7 +35,8 @@ Using the program is the same as on Linux (see README.md).
 Contents
 --------
   sstv_next.exe            the program
-  sstv_dec.exe, sstv_enc.exe, drm_dec.exe, drm_enc.exe   command line tools
+  sstv_dec.exe, sstv_enc.exe, sstv_combine.exe,
+  drm_dec.exe, drm_enc.exe                              command line tools
   fonts\                   DejaVu fonts (fallback if Segoe UI is missing) - free license
   hamlib\                  Hamlib 4.6.5 (rigctld, rigctl) - LGPL/GPL,
                            source: https://github.com/Hamlib/Hamlib

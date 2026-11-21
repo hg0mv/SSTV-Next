@@ -21,6 +21,8 @@ typedef struct {
     int    lines, lines_total;  /* progress in transmitted lines */
     int    syncs;               /* sync pulses used for slant correction */
     double clock_ppm;
+    double snr;                 /* signal/noise in 2.5 kHz, dB (NAN: unknown) */
+    int    combined;            /* the picture shown is combined from this many receptions (0: no) */
     char   msg[120];            /* last event for the status line */
     /* digital (HamDRM) receiver */
     int    drm_sync;            /* 1: locked to a digital signal */

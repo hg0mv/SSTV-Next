@@ -445,6 +445,41 @@ static float *tone_sync(const sstv_fbuf *b, long r0, long r1, int W, double off)
     return V;
 }
 
+/* |sum of the baseband turned to 1200 Hz + off|^2 / (len * energy) over [p, p+len): 1 for a
+ * clean tone, -1 if outside the buffer */
+static double sync_purity(const sstv_fbuf *b, long p, int len, double off)
+{
+    if (!b->y || p < 0 || p + len > b->n || len < 4) return -1;
+    double w = -2 * M_PI * (SSTV_F_SYNC + off - FM_CENTER) / b->fs, cr = 0, ci = 0, e = 0;
+    for (int i = 0; i < len; i++) {
+        double yr = b->y[2 * (p + i)], yi = b->y[2 * (p + i) + 1], c = cos(w * i), s = sin(w * i);
+        cr += yr * c - yi * s;
+        ci += yr * s + yi * c;
+        e += yr * yr + yi * yi;
+    }
+    return e > 1e-20 ? (cr * cr + ci * ci) / (len * e) : -1;
+}
+
+static int cmp_d(const void *x, const void *y)
+{
+    double a = *(const double *)x, b = *(const double *)y;
+    return a < b ? -1 : a > b;
+}
+static double median_d(double *v, int n) { qsort(v, n, sizeof *v, cmp_d); return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]); }
+
+/* purity -> S/N in 2.5 kHz (dB). Noise alone gives ~1/(len * B), B the noise bandwidth of
+ * the discriminator's filter; the rest is S/(S+N) over B. PURITY_B was calibrated on
+ * simulated channels. */
+#define PURITY_B 2400.0
+static double purity_snr(double v, int len, double fs)
+{
+    double v0 = fs / (len * PURITY_B);
+    double x = (v - v0) / (1 - v0);
+    if (x < 1e-3) x = 1e-3;
+    if (x > 0.999) x = 0.999;
+    return 10 * log10(x / (1 - x) * PURITY_B / 2500.0) - 2.0;     /* -2 dB: calibration */
+}
+
 static void syncbox_init(syncbox *sb, const sstv_fbuf *b, long r0, long r1, int W, double off)
 {
     if (r0 < 0) r0 = 0;
@@ -910,6 +945,37 @@ image *sstv_decode_ex(const sstv_fbuf *b, const sstv_mode *m, double t0, double 
         }
         if (cnt >= 8) off = acc / cnt - SSTV_F_SYNC;
     }
+    /* signal/noise: how pure the 1200 Hz tone is in the middle of the fitted sync pulses */
+    double snr = NAN;
+    if (b->y && np >= 8) {
+        int len = (int)lround(0.8 * W), max = (int)lround(0.005 * b->fs);
+        if (len > max) len = max;
+        double *pv = malloc((size_t)np * sizeof(double));
+        int nv = 0;
+        for (int i = 0; i < np; i++) {
+            if (fabs(T[i] - (a + bb * K[i])) > 1.5 * ms) continue;
+            double v = sync_purity(b, (long)lround(a + bb * K[i] + 0.1 * W), len, off);
+            if (v >= 0) pv[nv++] = v;
+        }
+        if (nv >= 8) snr = purity_snr(median_d(pv, nv), len, b->fs);
+        free(pv);
+    }
+    /* the same for every line on its fitted sync position: shows fades (QSB) line by line */
+    int nlq = 0;
+    unsigned char *lq = info ? info->lq : NULL;
+    if (lq) memset(lq, 0, sizeof info->lq);
+    if (lq && b->y && np >= 8) {
+        int len = (int)lround(0.8 * W), max = (int)lround(0.005 * b->fs);
+        if (len > max) len = max;
+        nlq = H < (int)sizeof info->lq ? H : (int)sizeof info->lq;
+        for (int k = 0; k < nlq; k++) {
+            double v = sync_purity(b, (long)lround(a + bb * k + 0.1 * W), len, off);
+            if (v < 0) continue;
+            double d = purity_snr(v, len, b->fs);
+            int q = (int)lround(d) + 20;
+            lq[k] = (unsigned char)(q < 1 ? 1 : q > 80 ? 80 : q);
+        }
+    }
     free(K);
     free(T);
     syncbox_free(&sb);
@@ -977,6 +1043,8 @@ image *sstv_decode_ex(const sstv_fbuf *b, const sstv_mode *m, double t0, double 
         info->end = a - sync_in_line * ms * r + bb * H;
         info->last_sync = last_sync;
         info->offset = off;
+        info->snr = snr;
+        info->nlq = nlq;
     }
     return img;
 }

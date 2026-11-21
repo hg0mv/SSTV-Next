@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.10). Tested with recordings and simulated channels;
+**Status:** development version (M0.11). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ![Main window](sstv_next_main_window.png)
@@ -24,12 +24,23 @@ on-air reports are welcome.
 - **Digital SSTV (HamDRM)**: own implementation from the DRM standard, bit-identical
   signal to QSSTV. Robustness modes A/B/E, 4/16/64-QAM, Reed-Solomon protected files
   (`.rs1`-`.rs4`), repeat requests (BSR), JPEG and JPEG 2000 pictures.
+- **Repeated pictures are combined**: when the same picture is received again (ISS events
+  and nets send it many times, every copy damaged somewhere else by noise, QSB or QRM),
+  the copies are recognised, aligned and merged row by row into one cleaner picture
+  (`..._combined.png`), which improves with every reception. Different pictures in the
+  same frame (an ISS series, a template with another callsign) are not mixed.
+- **Signal report**: every received picture carries its SNR, mistuning and the other
+  station's sound card clock error (stored in the PNG, shown in the gallery and when
+  viewing), and the reply can quote it: `%S` `%O` `%K` `%Q` in the templates, e.g.
+  *SNR 5dB QRG +39Hz CLK +117ppm*. A slanted picture usually means a sound card clock
+  error at the sender - now they can be told how much.
 - **Automatic reception**: analog and digital decoding run side by side, nothing to switch.
 - **FSK ID**: the other station's callsign (sent after the picture, MMSSTV / QSSTV style,
   or the digital station label) is filled into the log; your own callsign is sent after
   your pictures.
 - **Template editor** (similar to MMSSTV): text, shapes and pictures with macros
-  (`%M` my call, `%C` his call, `%R` RST, `%T` time, `%D` date, `%F` frequency).
+  (`%M` my call, `%C` his call, `%R` RST, `%T` time, `%D` date, `%F` frequency, `%Q` the
+  signal report).
 - **Rig control** via Hamlib rigctld (CAT frequency, PTT), ADIF log shared with DigiPan Next.
 
 ## Building on Linux
@@ -41,12 +52,13 @@ set with `SSTV_UI_FONT=/path/to/font.ttf`.
 
     make
 
-This builds five programs:
+This builds six programs:
 
 | program     | purpose |
 |-------------|---------|
 | `sstv_next` | the X11 transceiver |
 | `sstv_dec`  | command line decoder: pictures from a WAV recording |
+| `sstv_combine` | merges several receptions of the same picture into one |
 | `sstv_enc`  | command line encoder: picture to WAV (for tests, with simulated errors) |
 | `drm_dec`   | digital (HamDRM) decoder: received files from a WAV recording |
 | `drm_enc`   | digital (HamDRM) encoder: file to WAV |
@@ -100,7 +112,20 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     first ~6 seconds ("VIS damaged by QRM ..."). A correct-looking VIS is also checked
     against the sync pulses, and if two bits flipped, the right mode is used.
   - **Tuning**: tune the 1900 Hz leader of the VIS header onto the yellow line.
-  - Click a picture in the gallery to view it large; **Live** goes back.
+  - Click a picture in the gallery to view it large; **Live** goes back. Below it: the
+    sender's callsign (FSK ID), SNR, mistuning, clock error, lines - stored in the PNG
+    (text chunk `SSTVNext`), so they stay with the file. The gallery shows the SNR on every
+    picture, and `Nx` on combined ones.
+  - **Signal report** (SNR, offset, clock): measured on the sync pulses of every line. The
+    SNR is in 2.5 kHz bandwidth (as in WSJT-X / fldigi), so it can be below 0 dB.
+  - **The same picture again**: the last 8 analog receptions (of the last 3 hours) are kept.
+    When a new one shows the same picture (in the same mode), all copies are aligned
+    (a copy started without VIS or a partial one sits some lines away) and merged: every
+    row is weighted by its own noise in that copy, so a fade (QSB) in one copy is filled
+    from the others, and FM clicks are rejected pixel by pixel. The result is shown
+    ("COMBINED FROM 3 RECEPTIONS") and saved as `<first copy>_combined.png`; the single
+    receptions are saved as before. Pictures of an ISS series (same frame, other photo) or
+    a template with only another callsign are recognised as different.
 - **Transmission**: choose a background from the pictures in `~/sstv/tx` (`<` `>` or the
   arrow keys), PNG/JPEG/BMP/PPM. The picture is cropped to the mode's size (from the centre).
   **Mode**: click for the next mode, right click / wheel for the previous one. **Templ**
@@ -116,10 +141,12 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     size, line width, opacity, layer order (Up/Down), copy, delete.
   - Macros in the text, filled in at transmission: `%M` my callsign, `%C` the other station
     (from the Call field of the log bar), `%R` RST (S field), `%T` UTC time, `%D` date,
-    `%F` frequency.
+    `%F` frequency, and the report on the last received picture (or the one being viewed):
+    `%S` SNR, `%O` mistuning, `%K` clock error, `%Q` all three in one line.
   - Templates: name + **Save** (saving under a new name makes a copy), **New**,
     **Delete tpl**, `<` `>` to switch. **Done** saves and returns. Three templates are
-    created on the first start: *Call*, *CQ* and *QSO reply*. They are stored in
+    created on the first start: *Call*, *CQ*, *QSO reply* and *Report* (QSO reply with
+    the signal report). They are stored in
     `~/.config/sstvnext/templates/*.tpl` (text files).
   - Reception keeps running in the background while editing; its state is shown below the picture.
 - **FSK ID** (callsign after the picture, MMSSTV / QSSTV standard):
@@ -178,6 +205,8 @@ standard, with a signal bit-identical to QSSTV's).
     ./sstv_next -f recording.wav -s 10    # feed a WAV recording to the receiver, 10x speed
     ./sstv_next -x tx.wav                 # transmission goes to a WAV file instead of the sound card
     ./sstv_dec tx.wav                     # decode for checking (-r: without the QRM filter)
+    ./sstv_dec -P -o pass2 iss.wav        # PNG with the reception data (SNR of every line)
+    ./sstv_combine -o best.png pass1_1.png pass2_1.png pass3_1.png   # merge the copies
     ./drm_enc -m B -q 16 -c HG0MV pic.jpg drm.wav    # digital transmission to WAV
     ./drm_dec -v -o /tmp drm.wav                      # digital reception from WAV
     ./drm_enc -r 2 pic.jpg drm.wav                    # with Reed-Solomon protection (pic.rs2)
@@ -207,6 +236,7 @@ the full-height variant is shown then. The MMSSTV-specific modes (MP, MR, ML, ex
 | `modes.c` | mode table (a new mode is one line) |
 | `demod.c` | FM discriminator (instantaneous frequency) |
 | `tones.c` | sliding DFT tone powers (weak-signal VIS detection) |
+| `combine.c` | recognising, aligning and merging repeated receptions of a picture |
 | `rx.c` | VIS search, sync tracking, robust slant fit, picture building |
 | `tx.c` | encoder (phase-continuous FM, VIS header) |
 | `tpl.c` | templates: objects, TrueType text (stb_truetype), drawing, saving |

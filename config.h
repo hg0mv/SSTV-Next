@@ -21,6 +21,7 @@ typedef struct {
     int  drm_size, drm_kb;                     /* picture size index, JPEG size limit (kB) */
     int  drm_rs;                               /* Reed-Solomon protection 0 (off) .. 4 */
     int  fskid;                                /* send FSK ID (callsign) after analog pictures */
+    int  tpl_report;                           /* the "Report" template has been created once */
 } app_config;
 
 extern app_config cfg;

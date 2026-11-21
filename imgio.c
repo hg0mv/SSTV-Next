@@ -44,6 +44,102 @@ int img_save_png(const char *path, const image *img)
     return stbi_write_png(path, img->w, img->h, 3, img->px, img->w * 3) ? 0 : -1;
 }
 
+/* ---- PNG text chunk (tEXt, keyword "SSTVNext") with the reception data ---- */
+
+static unsigned long crc32_png(const unsigned char *p, size_t n)
+{
+    unsigned long c = 0xffffffffUL;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320UL & (0UL - (c & 1)));
+    }
+    return c ^ 0xffffffffUL;
+}
+
+static void put32(unsigned char *p, unsigned long v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
+
+int img_save_png_meta(const char *path, const image *img, const char *meta)
+{
+    if (!meta || !meta[0]) return img_save_png(path, img);
+    int len = 0;
+    unsigned char *png = stbi_write_png_to_mem(img->px, img->w * 3, img->w, img->h, 3, &len);
+    if (!png || len < 12 + 8) { free(png); return -1; }
+    static const char key[] = "SSTVNext";
+    size_t ml = strlen(meta), dl = sizeof key + ml;          /* keyword, 0, text */
+    unsigned char *ch = malloc(12 + dl);
+    put32(ch, (unsigned long)dl);
+    memcpy(ch + 4, "tEXt", 4);
+    memcpy(ch + 8, key, sizeof key);
+    memcpy(ch + 8 + sizeof key, meta, ml);
+    put32(ch + 8 + dl, crc32_png(ch + 4, 4 + dl));
+    int ret = -1;
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        /* everything up to IEND (the last 12 bytes), our chunk, then IEND */
+        int ok = fwrite(png, 1, (size_t)len - 12, f) == (size_t)len - 12 &&
+                 fwrite(ch, 1, 12 + dl, f) == 12 + dl &&
+                 fwrite(png + len - 12, 1, 12, f) == 12;
+        if (fclose(f) == 0 && ok) ret = 0;
+    }
+    free(ch);
+    STBIW_FREE(png);
+    return ret;
+}
+
+int img_png_meta(const char *path, char *out, size_t n)
+{
+    if (n) out[0] = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char h[8];
+    int found = 0;
+    if (fread(h, 1, 8, f) == 8 && !memcmp(h, "\x89PNG", 4)) {
+        for (;;) {
+            unsigned char c[8];
+            if (fread(c, 1, 8, f) != 8) break;
+            unsigned long l = ((unsigned long)c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3];
+            if (!memcmp(c + 4, "IEND", 4) || l > (1u << 26)) break;
+            if (!memcmp(c + 4, "tEXt", 4) && l > 9 && l < 4096) {
+                char buf[4096];
+                if (fread(buf, 1, l, f) != l) break;
+                fseek(f, 4, SEEK_CUR);
+                if (!memcmp(buf, "SSTVNext", 9)) {
+                    size_t tl = l - 9;
+                    if (tl >= n) tl = n - 1;
+                    memcpy(out, buf + 9, tl);
+                    out[tl] = 0;
+                    found = 1;
+                    break;
+                }
+                continue;
+            }
+            if (fseek(f, (long)l + 4, SEEK_CUR)) break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* value of "key=value" in a meta string ("k1=v1;k2=v2"); 1 if found */
+int img_meta_get(const char *meta, const char *key, char *out, size_t n)
+{
+    size_t kl = strlen(key);
+    for (const char *p = meta; p && *p; ) {
+        const char *e = strchr(p, ';');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (l > kl && !strncmp(p, key, kl) && p[kl] == '=') {
+            size_t vl = l - kl - 1;
+            if (vl >= n) vl = n - 1;
+            memcpy(out, p + kl + 1, vl);
+            out[vl] = 0;
+            return 1;
+        }
+        p = e ? e + 1 : NULL;
+    }
+    if (n) out[0] = 0;
+    return 0;
+}
+
 image *img_fit(const image *src, int w, int h)
 {
     /* largest centred window of the source with the target aspect ratio */

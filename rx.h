@@ -53,6 +53,9 @@ typedef struct {
     double end;         /* sample index of image end */
     int    last_sync;   /* last line where a sync pulse was seen, -1: none */
     double offset;      /* mistuning used (measured on the syncs if off was NAN) */
+    double snr;         /* signal/noise in 2.5 kHz, dB, from the sync pulses; NAN: unknown */
+    int    nlq;         /* lines with a quality below (0: none measured) */
+    unsigned char lq[1024];   /* per line: signal/noise of its sync pulse, dB + 20 (1..80), 0 unknown */
 } sstv_rxinfo;
 
 #define SSTV_NR 1      /* sstv_decode_ex flag: remove impulse noise (QRM specks) */

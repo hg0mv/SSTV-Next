@@ -4,9 +4,9 @@ LDLIBS  = -lm
 
 CORE = modes.o wav.o image.o demod.o tones.o rx.o tx.o
 DRM  = drm_common.o drm_tx.o drm_rx.o mot.o rsfile.o
-APP  = $(CORE) $(DRM) fskid.o jp2.o imgio.o live.o audio.o rig.o adif.o config.o tpl.o ui.o
+APP  = $(CORE) $(DRM) fskid.o jp2.o imgio.o combine.o live.o audio.o rig.o adif.o config.o tpl.o ui.o
 
-all: sstv_next sstv_enc sstv_dec drm_enc drm_dec
+all: sstv_next sstv_enc sstv_dec sstv_combine drm_enc drm_dec
 
 # the X11 transceiver
 sstv_next: sstv_next.o $(APP)
@@ -16,7 +16,10 @@ sstv_next: sstv_next.o $(APP)
 sstv_enc: sstv_enc.o $(CORE)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-sstv_dec: sstv_dec.o $(CORE)
+sstv_dec: sstv_dec.o $(CORE) imgio.o combine.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+sstv_combine: sstv_combine.o image.o imgio.o combine.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 drm_enc: drm_enc.o $(DRM) wav.o
@@ -29,7 +32,7 @@ drm_dec: drm_dec.o $(DRM) wav.o
 	$(CC) $(CFLAGS) -c $<
 
 clean:
-	rm -f *.o sstv_next sstv_enc sstv_dec drm_enc drm_dec
+	rm -f *.o sstv_next sstv_enc sstv_dec sstv_combine drm_enc drm_dec
 
 .PHONY: all clean
 
@@ -45,7 +48,7 @@ WINDRM   = $(addprefix $(WINOBJ)/,$(DRM:.o=.w.o)) $(WINOBJ)/wav.w.o
 WINDIST  = win/dist/SSTVNext
 WINLIBS  = -static -lwinmm -lgdi32 -luser32 -lws2_32 -ladvapi32 -lpthread -lm
 
-win: $(WINDIST)/sstv_next.exe $(WINDIST)/sstv_dec.exe $(WINDIST)/sstv_enc.exe $(WINDIST)/drm_dec.exe $(WINDIST)/drm_enc.exe
+win: $(WINDIST)/sstv_next.exe $(WINDIST)/sstv_dec.exe $(WINDIST)/sstv_enc.exe $(WINDIST)/sstv_combine.exe $(WINDIST)/drm_dec.exe $(WINDIST)/drm_enc.exe
 	@mkdir -p $(WINDIST)/fonts
 	cp win/fonts/*.ttf win/fonts/LICENSE-DejaVu.txt $(WINDIST)/fonts/
 	if [ -d win/bundle ]; then cp -r win/bundle/* $(WINDIST)/; fi
@@ -66,11 +69,15 @@ $(WINDIST)/sstv_next.exe: $(WINOBJ)/sstv_next.w.o $(WINAPP) $(WINOBJ)/sstvnext.r
 	@mkdir -p $(WINDIST)
 	$(WINCC) -mwindows -o $@ $^ $(WINLIBS)
 
-$(WINDIST)/sstv_dec.exe: $(WINOBJ)/sstv_dec.w.o $(WINCORE)
+$(WINDIST)/sstv_dec.exe: $(WINOBJ)/sstv_dec.w.o $(WINCORE) $(WINOBJ)/imgio.w.o $(WINOBJ)/combine.w.o
 	@mkdir -p $(WINDIST)
 	$(WINCC) -o $@ $^ $(WINLIBS)
 
 $(WINDIST)/sstv_enc.exe: $(WINOBJ)/sstv_enc.w.o $(WINCORE)
+	@mkdir -p $(WINDIST)
+	$(WINCC) -o $@ $^ $(WINLIBS)
+
+$(WINDIST)/sstv_combine.exe: $(WINOBJ)/sstv_combine.w.o $(WINOBJ)/image.w.o $(WINOBJ)/imgio.w.o $(WINOBJ)/combine.w.o
 	@mkdir -p $(WINDIST)
 	$(WINCC) -o $@ $^ $(WINLIBS)
 
