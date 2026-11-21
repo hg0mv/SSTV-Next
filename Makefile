@@ -52,6 +52,7 @@ win: $(WINDIST)/sstv_next.exe $(WINDIST)/sstv_dec.exe $(WINDIST)/sstv_enc.exe $(
 	@mkdir -p $(WINDIST)/fonts
 	cp win/fonts/*.ttf win/fonts/LICENSE-DejaVu.txt $(WINDIST)/fonts/
 	if [ -d win/bundle ]; then cp -r win/bundle/* $(WINDIST)/; fi
+	cp README.md LICENSE win/README-Windows.txt $(WINDIST)/
 
 $(WINOBJ)/%.w.o: %.c *.h win/*.h
 	@mkdir -p $(WINOBJ)
