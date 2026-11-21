@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.13). Tested with recordings and simulated channels;
+**Status:** development version (M0.12). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ![Main window](sstv_next_main_window.png)

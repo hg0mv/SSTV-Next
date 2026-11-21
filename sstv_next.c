@@ -39,7 +39,7 @@
 #include "rsfile.h"
 #include "fskid.h"
 
-#define APP        "SSTV Next M0.13"
+#define APP        "SSTV Next M0.12"
 #define AUDIO_RATE 11025
 #define W0 1280
 #define H0 820
