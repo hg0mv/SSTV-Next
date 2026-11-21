@@ -45,6 +45,7 @@ static int load_file(const char *path, int ours)
         else if (!strcmp(k, "fskid")) cfg.fskid = atoi(v);
         else if (!strcmp(k, "tpl_report")) cfg.tpl_report = atoi(v);
         else if (!strcmp(k, "txclk")) cfg.txclk = atoi(v);
+        else if (!strcmp(k, "scan_on")) cfg.scan_on = (unsigned)strtoul(v, NULL, 0);
         else if (!strcmp(k, "clk")) {
             cfg.nclk = 0;
             for (const char *p = v; *p && cfg.nclk < 16; ) {
@@ -71,6 +72,7 @@ void config_load(void)
     snprintf(cfg.rx_mode, sizeof cfg.rx_mode, "auto");
     cfg.nr = 1;
     cfg.fskid = 1;
+    cfg.scan_on = 0x2B6;      /* 3.735 7.165 14.230 14.233 21.340 28.680 */
     cfg.drm_rob = 1; cfg.drm_qam = 1; cfg.drm_prot = 1; cfg.drm_so = 1; cfg.drm_size = 0; cfg.drm_kb = 3;
     char p[400];
     cfg_path(p, sizeof p, "sstvnext", 0);
@@ -90,6 +92,7 @@ void config_save(void)
             cfg.audio, cfg.rx_dir, cfg.tx_dir, cfg.overlay, cfg.tx_mode, cfg.rx_mode, cfg.nr, cfg.tpl);
     fprintf(f, "fskid=%d\n", cfg.fskid);
     fprintf(f, "tpl_report=%d\n", cfg.tpl_report);
+    fprintf(f, "scan_on=0x%x\n", cfg.scan_on);
     fprintf(f, "txclk=%d\nclk=", cfg.txclk);
     for (int i = 0; i < cfg.nclk; i++) fprintf(f, "%s%.0f", i ? "," : "", cfg.clk[i]);
     fprintf(f, "\n");

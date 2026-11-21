@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.12). Tested with recordings and simulated channels;
+**Status:** development version (M0.13). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ![Main window](sstv_next_main_window.png)
@@ -34,6 +34,9 @@ on-air reports are welcome.
   viewing), and the reply can quote it: `%S` `%O` `%K` `%Q` in the templates, e.g.
   *SNR 5dB QRG +39Hz CLK +117ppm*. A slanted picture usually means a sound card clock
   error at the sender - now they can be told how much.
+- **SSTV scanner**: goes round the SSTV frequencies with the radio in DATA mode (D-L on
+  80/40 m, D-U above), stays where it finds a picture, analog or digital, and when the
+  frequency has gone quiet after it, offers to send (F1). It never transmits by itself.
 - **Automatic reception**: analog and digital decoding run side by side, nothing to switch.
 - **FSK ID**: the other station's callsign (sent after the picture, MMSSTV / QSSTV style,
   or the digital station label) is filled into the log; your own callsign is sent after
@@ -112,6 +115,14 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     first ~6 seconds ("VIS damaged by QRM ..."). A correct-looking VIS is also checked
     against the sync pulses, and if two bits flipped, the right mode is used.
   - **Tuning**: tune the 1900 Hz leader of the VIS header onto the yellow line.
+  - **Scan** (needs CAT): the radio goes round the selected frequencies (right click on
+    the button: 3.730 3.735 7.165 7.171 14.230 14.233 18.160 21.340 24.975 28.680 MHz),
+    in DATA mode (Hamlib PKTLSB below 10 MHz, PKTUSB above; on the FT-891 D-L / D-U),
+    12 s on each. Where an analog or digital picture is found it stays; 6 s after the
+    picture, if nothing else comes, it shows *quiet now - F1: send* for 45 s, then goes
+    on. Sending pauses the scanner on that frequency (a QSO); a click on Scan goes on.
+    The scanner never transmits by itself: is the frequency really free, is the antenna
+    right for that band - that is the operator's decision.
   - Click a picture in the gallery to view it large; **Live** goes back. Below it: the
     sender's callsign (FSK ID), SNR, mistuning, clock error, lines - stored in the PNG
     (text chunk `SSTVNext`), so they stay with the file. The gallery shows the SNR on every

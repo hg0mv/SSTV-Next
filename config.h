@@ -26,6 +26,7 @@ typedef struct {
        the median is our card's error, every station seems to have it */
     double clk[16]; int nclk;
     int  txclk;                                /* correct our transmission by it */
+    unsigned scan_on;                          /* scanner: bit i = frequency i of the list in use */
 } app_config;
 
 extern app_config cfg;

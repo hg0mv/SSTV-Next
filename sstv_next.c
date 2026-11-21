@@ -39,7 +39,7 @@
 #include "rsfile.h"
 #include "fskid.h"
 
-#define APP        "SSTV Next M0.12"
+#define APP        "SSTV Next M0.13"
 #define AUDIO_RATE 11025
 #define W0 1280
 #define H0 820
@@ -1321,7 +1321,152 @@ static void draw_audio_menu_overlay(void)
         ui_text(F_REG, 118, 95 + i * 25 + 3, audio_devices[i], c.text);
         if (sel_) ui_text(F_SMALLB, 380, 95 + i * 25 + 3, "in use", RGB(200, 220, 255));
     }
-}static void draw_status_bar(void)
+}
+/* ------------------------------------------------------------ scanner --- */
+/* Goes round the SSTV frequencies (rig in DATA mode: D-L below 10 MHz, D-U above), stays
+ * where it finds a picture (analog or digital), and when the frequency has gone quiet
+ * after it offers to send (F1). It never transmits by itself. */
+typedef struct { double mhz; int usb; } ScanFreq;
+static const ScanFreq scan_list[] = {
+    {3.730, 0}, {3.735, 0}, {7.165, 0}, {7.171, 0}, {14.230, 1},
+    {14.233, 1}, {18.160, 1}, {21.340, 1}, {24.975, 1}, {28.680, 1},
+};
+#define NSCAN ((int)(sizeof scan_list / sizeof scan_list[0]))
+#define SCAN_DWELL 12.0      /* s listening on a frequency */
+#define SCAN_QUIET 6.0       /* s of silence after a picture: the frequency is free */
+#define SCAN_OFFER 45.0      /* s the offer to send stays before scanning on */
+enum { SC_OFF, SC_LISTEN, SC_STAY, SC_QUIET, SC_HOLD };
+static int scan_state = SC_OFF, scan_i = -1, scan_menu = 0;
+static double scan_t0, scan_last_act;
+static char scan_err[80] = "";
+
+static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+
+static int scan_tune(int i)
+{
+    char cmd[64];
+    snprintf(cmd, sizeof cmd, "F %.0f\n", scan_list[i].mhz * 1e6);
+    if (rig_cmd(cmd) != 0) return -1;
+    rig_cmd(scan_list[i].usb ? "M PKTUSB 0\n" : "M PKTLSB 0\n");
+    snprintf(lg_freq, sizeof lg_freq, "%.5f", scan_list[i].mhz);
+    freq_auto = 1;
+    return 0;
+}
+
+static int scan_next(void)
+{
+    if (!cfg.scan_on) return -1;
+    for (int k = 1; k <= NSCAN; k++) {
+        int i = (scan_i + k + NSCAN) % NSCAN;
+        if (cfg.scan_on & (1u << i)) return i;
+    }
+    return -1;
+}
+
+static void scan_stop(void) { scan_state = SC_OFF; scan_err[0] = 0; }
+
+static void scan_go_next(void)
+{
+    int i = scan_next();
+    if (i < 0) { scan_stop(); snprintf(scan_err, sizeof scan_err, "Scan: no frequency selected (right click on Scan)"); return; }
+    if (scan_tune(i) != 0) { scan_stop(); snprintf(scan_err, sizeof scan_err, "Scan: the radio does not answer (CAT)"); return; }
+    scan_i = i; scan_state = SC_LISTEN; scan_t0 = now_s();
+}
+
+static void scan_start(void)
+{
+    if (!rig_enabled) { snprintf(scan_err, sizeof scan_err, "Scan needs CAT: set up the radio (Radio)"); return; }
+    scan_err[0] = 0;
+    scan_go_next();
+}
+
+/* once in a while from the main loop; returns 1 if the display has to change */
+static int scan_tick(const live_status *st)
+{
+    if (scan_state == SC_OFF) return 0;
+    double t = now_s();
+    int act = st->state == LIVE_RX || st->drm_sync;
+    if (act) scan_last_act = t;
+    int old = scan_state;
+    if (tx_active()) { scan_state = SC_HOLD; return old != SC_HOLD; }     /* a QSO: stay here */
+    switch (scan_state) {
+    case SC_LISTEN:
+        if (act) scan_state = SC_STAY;
+        else if (t - scan_t0 > SCAN_DWELL) { scan_go_next(); return 1; }
+        break;
+    case SC_STAY:
+        if (!act && t - scan_last_act > SCAN_QUIET) { scan_state = SC_QUIET; scan_t0 = t; }
+        break;
+    case SC_QUIET:
+        if (act) scan_state = SC_STAY;
+        else if (t - scan_t0 > SCAN_OFFER) { scan_go_next(); return 1; }
+        break;
+    }
+    if (scan_state != old) return 1;
+    static int last_sec = -1;                       /* the countdown on the button */
+    int sec = (int)(t - scan_t0);
+    if (sec != last_sec && (scan_state == SC_LISTEN || scan_state == SC_QUIET)) { last_sec = sec; return 1; }
+    return 0;
+}
+
+static void scan_label(char *b, size_t n)
+{
+    if (scan_state == SC_OFF) { snprintf(b, n, "Scan"); return; }
+    double f = scan_list[scan_i].mhz;
+    int left = (int)((scan_state == SC_LISTEN ? SCAN_DWELL : SCAN_OFFER) - (now_s() - scan_t0) + 0.99);
+    if (left < 0) left = 0;
+    switch (scan_state) {
+    case SC_LISTEN: snprintf(b, n, "%.3f %ds", f, left); break;
+    case SC_STAY:   snprintf(b, n, "%.3f RX", f); break;
+    case SC_QUIET:  snprintf(b, n, "%.3f F1?", f); break;
+    default:        snprintf(b, n, "%.3f hold", f); break;
+    }
+}
+
+/* the scanner's word in the message line, or NULL */
+static const char *scan_msg(void)
+{
+    static char m[120];
+    if (scan_err[0]) return scan_err;
+    if (scan_state == SC_QUIET) {
+        snprintf(m, sizeof m, "%.3f quiet now - F1: send", scan_list[scan_i].mhz);
+        return m;
+    }
+    if (scan_state == SC_HOLD) {
+        snprintf(m, sizeof m, "Scan paused (QSO) - Scan: go on");
+        return m;
+    }
+    return NULL;
+}
+
+static void draw_scan_button(void)
+{
+    char b[32];
+    scan_label(b, sizeof b);
+    begin_buf(900, 43, 94, 33);
+    fill(900, 43, 94, 33, c.panel);
+    button(900, 43, 94, 32, b, scan_state != SC_OFF);
+    end_buf();
+}
+
+static void draw_scan_menu(void)
+{
+    if (!scan_menu) return;
+    int x = 900, y = 78, w = 190, h = NSCAN * 25 + 34;
+    ui_shadow(x, y, w, h, 8, 16, 0.5);
+    ui_rrect(x, y, w, h, 8, RGB(28, 33, 41), 1);
+    ui_rrect_line(x, y, w, h, 8, RGB(60, 70, 84), 1);
+    ui_text(F_SMALL, x + 12, y + 20, "Frequencies to scan", c.muted);
+    for (int i = 0; i < NSCAN; i++) {
+        int on = (cfg.scan_on >> i) & 1, yy = y + 28 + i * 25;
+        if (on) ui_rrect(x + 4, yy, w - 8, 23, 5, c.blue, 1);
+        char b[40]; snprintf(b, sizeof b, "%.3f MHz", scan_list[i].mhz);
+        ui_text(F_REG, x + 14, yy + 16, b, c.text);
+        ui_text(F_SMALLB, x + 130, yy + 16, scan_list[i].usb ? "D-U" : "D-L", on ? RGB(200, 220, 255) : c.muted);
+    }
+}
+
+static void draw_status_bar(void)
 {
     begin_buf(0, height - 25, width, 25);
     fill(0, height - 25, width, 25, c.inset);
@@ -1335,7 +1480,7 @@ static void draw_audio_menu_overlay(void)
     end_buf();
 }static void draw_rx_msg(void)
 {
-    int x = 900, w = width - 912;
+    int x = 1002, w = width - 1014;
     begin_buf(x, 43, w, 33);
     fill(x, 43, w, 33, c.panel);
     int qrm = strstr(rx_st.msg, "QRM") != NULL, live = rx_st.state == LIVE_RX, txon = tx_active();
@@ -1344,7 +1489,9 @@ static void draw_audio_menu_overlay(void)
     ui_rrect_line(x, 43, w, 33, 16, qrm ? RGB(120, 100, 40) : RGB(38, 45, 55), 1);
     ui_circle(x + 17, 59.5, 4.5, dot, 1);
     if (live) ui_circle(x + 17, 59.5, 8, dot, 0.18);
-    ui_text_fit(F_REG, x + 31, 64, txon ? "Transmitting - receiver muted" : rx_st.msg, txon ? c.tx : qrm ? c.yellow : c.text, w - 44);
+    const char *sm = txon ? NULL : scan_msg();
+    ui_text_fit(F_REG, x + 31, 64, txon ? "Transmitting - receiver muted" : sm ? sm : rx_st.msg,
+                txon ? c.tx : sm ? (scan_err[0] ? c.yellow : c.accent) : qrm ? c.yellow : c.text, w - 44);
     end_buf();
 }/* app icon: a small picture with red/green/blue scan lines */
 static void draw_logo(int x, int y)
@@ -1381,6 +1528,7 @@ static void draw(void)
     button(590, 43, 100, 32, "Save now", 0);
     button(700, 43, 90, 32, "Radio", rig_enabled);
     button(800, 43, 90, 32, cfg.nr ? "QRM filter" : "QRM filt off", cfg.nr);
+    draw_scan_button();
     draw_rx_msg();
     draw_picture();
     draw_rx_status();
@@ -1391,6 +1539,7 @@ static void draw(void)
     draw_status_bar();
     if (rig_dlg || log_dlg) ui_dim(0, 0, width, height, 0.55);
     draw_audio_menu_overlay();
+    draw_scan_menu();
     draw_rig_dialog();
     draw_log_dialog();
     ui_present(0, 0, width, height);
@@ -2064,6 +2213,19 @@ int main(int argc, char **argv)
                 int bx = e.xbutton.x, by = e.xbutton.y, btn = (int)e.xbutton.button;
                 if (rig_dlg) { rig_dlg_click(bx, by, btn); draw(); continue; }
                 if (log_dlg) { log_dlg_click(bx, by, btn); draw(); continue; }
+                if (scan_menu) {                          /* frequency list of the scanner */
+                    int i = (by - 78 - 28) / 25;
+                    if (btn == 1 && bx >= 900 && bx < 1090 && by >= 106 && i >= 0 && i < NSCAN) {
+                        cfg.scan_on ^= 1u << i; config_save(); draw_scan_menu(); flush_ui(); continue;
+                    }
+                    scan_menu = 0; draw(); continue;
+                }
+                if (hit(bx, by, 900, 43, 94, 32) && (btn == 1 || btn == 3)) {
+                    if (btn == 3) { if (!tx_active()) { scan_menu = 1; draw_scan_menu(); flush_ui(); } continue; }
+                    if (tx_active()) continue;
+                    if (scan_state == SC_OFF || scan_state == SC_HOLD) scan_start(); else scan_stop();
+                    draw_scan_button(); draw_rx_msg(); flush_ui(); continue;
+                }
                 if (audio_menu) {
                     if (btn == 1 && bx >= 104 && bx <= 414 && by >= 75 && by < 75 + audio_device_count * 25 + 8) {
                         int idx = (by - 79) / 25;
@@ -2107,7 +2269,7 @@ int main(int argc, char **argv)
             last_rep.valid = 1; last_rep.snr = st.snr; last_rep.offset = st.offset;
             last_rep.ppm = isnan(own_clock()) ? st.clock_ppm : st.clock_ppm - own_clock();
             last_rep.syncs = st.syncs; last_rep.lines = st.lines_total; last_rep.call[0] = 0;
-            if (!view_img) { tx_render(); if (!(rig_dlg || log_dlg || audio_menu) && !edit_mode) draw_tx_panel(); }   /* %S %O %K %Q in the reply */
+            if (!view_img) { tx_render(); if (!(rig_dlg || log_dlg || audio_menu || scan_menu) && !edit_mode) draw_tx_panel(); }   /* %S %O %K %Q in the reply */
         }
         int stchg = memcmp(&st, &rx_st, sizeof st) != 0;
         int drmchg = st.drm_sync != rx_st.drm_sync || strcmp(st.drm_call, rx_st.drm_call) || strcmp(st.drm_info, rx_st.drm_info);
@@ -2115,7 +2277,8 @@ int main(int argc, char **argv)
         if (st.state == LIVE_RX && st.mode) snprintf(last_mode_name, sizeof last_mode_name, "%s", st.mode->name);
         else if (st.drm_sync) snprintf(last_mode_name, sizeof last_mode_name, "DRM");
         if (newpic) { image_free(rx_img); rx_img = ni; }
-        int covered = rig_dlg || log_dlg || audio_menu;     /* a dialog or menu lies over the panels */
+        int covered = rig_dlg || log_dlg || audio_menu || scan_menu;     /* a dialog or menu lies over the panels */
+        if (scan_tick(&st) && !rig_dlg && !log_dlg) { draw_scan_button(); draw_rx_msg(); if (scan_menu) draw_scan_menu(); }
         if (started && view_img) { close_view(); if (!covered) draw(); }
         else if (!covered) {
             if ((newpic || drmchg) && !view_img && !edit_mode) draw_picture();
@@ -2154,12 +2317,12 @@ int main(int argc, char **argv)
         {   /* %T in the template: new minute, new preview */
             static int last_min = -1;
             time_t now = time(NULL); int mn = (int)(now / 60);
-            if (mn != last_min) { if (last_min >= 0 && !drag) { tx_render(); if (!rig_dlg && !log_dlg && !audio_menu) { if (edit_mode) draw_editor_canvas(); else draw_tx_panel(); } } last_min = mn; }
+            if (mn != last_min) { if (last_min >= 0 && !drag) { tx_render(); if (!rig_dlg && !log_dlg && !audio_menu && !scan_menu) { if (edit_mode) draw_editor_canvas(); else draw_tx_panel(); } } last_min = mn; }
         }
         if (++ticks % 5 == 0) {
-            if (!audio_menu && !rig_dlg && !log_dlg) { update_spectrum(); draw_tuning(); draw_log_bar(); draw_status_bar(); }
+            if (!audio_menu && !scan_menu && !rig_dlg && !log_dlg) { update_spectrum(); draw_tuning(); draw_log_bar(); draw_status_bar(); }
             int txnow = tx_active();
-            if ((txnow || was_tx) && !audio_menu && !rig_dlg && !log_dlg && !edit_mode) { draw_tx_panel(); if (txnow != was_tx) draw_rx_msg(); }
+            if ((txnow || was_tx) && !audio_menu && !scan_menu && !rig_dlg && !log_dlg && !edit_mode) { draw_tx_panel(); if (txnow != was_tx) draw_rx_msg(); }
             was_tx = txnow;
             flush_ui();
         }
