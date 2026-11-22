@@ -95,6 +95,10 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     ./sstv_next
 
 - **Audio input**: choose the sound card connected to the radio (`plughw:N,0` or `default`).
+  Under the devices: **Channel** - *Both* (mixed to mono, the default), *Left* or *Right*,
+  e.g. two receivers on the two channels of one sound card, or an SDR that puts two
+  frequencies on its left and right output. A mono device simply gives its one channel.
+  The test WAV input (`-f`) follows the same setting, so stereo recordings work too.
   The program works at 11025 Hz; plughw converts on any card.
 - **Radio**: rig model, serial port and speed. On the first start the callsign and rig
   settings are taken from DigiPan Next. The program runs its own rigctld on port 14533,

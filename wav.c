@@ -24,7 +24,9 @@ static double sample_at(const unsigned char *p, int fmt, int bits)
     return 0;
 }
 
-float *wav_read(const char *path, double *fs, long *n)
+float *wav_read(const char *path, double *fs, long *n) { return wav_read_ch(path, fs, n, 0); }
+
+float *wav_read_ch(const char *path, double *fs, long *n, int chan)
 {
     FILE *fp = fopen(path, "rb");
     if (!fp) { perror(path); return NULL; }
@@ -71,7 +73,9 @@ float *wav_read(const char *path, double *fs, long *n)
             int bps = bits / 8, frame = bps * ch;
             long frames = (long)(len / (size_t)frame);
             out = malloc((size_t)(frames ? frames : 1) * sizeof(float));
+            int pick = chan >= 1 && chan <= ch ? chan - 1 : -1;     /* one channel, or all mixed */
             for (long i = 0; i < frames; i++) {
+                if (pick >= 0) { out[i] = (float)sample_at(raw + (size_t)i * frame + (size_t)pick * bps, fmt, bits); continue; }
                 double acc = 0;
                 for (int c = 0; c < ch; c++)
                     acc += sample_at(raw + (size_t)i * frame + (size_t)c * bps, fmt, bits);

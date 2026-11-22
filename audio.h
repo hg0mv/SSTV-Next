@@ -12,6 +12,11 @@ typedef void (*audio_cb)(const float *x, int n, void *user);
 
 int   audio_list(char devs[][128], int max);       /* "default", "plughw:N,0" ... */
 
+/* Input channel: 0 both mixed (mono), 1 left, 2 right - e.g. two receivers on the two
+   channels of one sound card, or an SDR with two outputs. Takes effect at the next
+   audio_start / audio_start_file. */
+void  audio_set_channel(int ch);
+
 /* Starts (or restarts) capture from an ALSA device. status gets a message. */
 int   audio_start(const char *device, unsigned rate, audio_cb cb, void *user,
                   char *status, size_t ns);

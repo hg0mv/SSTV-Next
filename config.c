@@ -36,6 +36,7 @@ static int load_file(const char *path, int ours)
         else if (!strcmp(k, "cat")) cfg_cat = atoi(v) ? 1 : 0;
         else if (!ours) continue;
         else if (!strcmp(k, "audio")) snprintf(cfg.audio, sizeof cfg.audio, "%.120s", v);
+        else if (!strcmp(k, "in_channel")) cfg.in_ch = atoi(v) >= 0 && atoi(v) <= 2 ? atoi(v) : 0;
         else if (!strcmp(k, "rxdir")) snprintf(cfg.rx_dir, sizeof cfg.rx_dir, "%.250s", v);
         else if (!strcmp(k, "txdir")) snprintf(cfg.tx_dir, sizeof cfg.tx_dir, "%.250s", v);
         else if (!strcmp(k, "overlay")) snprintf(cfg.overlay, sizeof cfg.overlay, "%.60s", v);
@@ -88,6 +89,7 @@ void config_save(void)
     FILE *f = fopen(p, "w"); if (!f) return;
     fprintf(f, "call=%s\nmodel=%d\nname=%s\nport=%s\nbaud=%d\ncat=%d\n",
             cfg.call, cfg_model, cfg_model_name, cfg_port, cfg_baud, cfg_cat);
+    fprintf(f, "in_channel=%d\n", cfg.in_ch);
     fprintf(f, "audio=%s\nrxdir=%s\ntxdir=%s\noverlay=%s\ntxmode=%s\nrxmode=%s\nnr=%d\ntemplate=%s\n",
             cfg.audio, cfg.rx_dir, cfg.tx_dir, cfg.overlay, cfg.tx_mode, cfg.rx_mode, cfg.nr, cfg.tpl);
     fprintf(f, "fskid=%d\n", cfg.fskid);

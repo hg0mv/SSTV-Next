@@ -9,6 +9,7 @@
 typedef struct {
     char call[24];
     char audio[128];        /* last used audio device */
+    int  in_ch;             /* input channel: 0 both (mono), 1 left, 2 right */
     char rx_dir[256];       /* received images are saved here */
     char tx_dir[256];       /* images offered for transmission */
     char overlay[64];       /* text put on the TX image, %M = my call */

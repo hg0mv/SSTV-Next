@@ -31,6 +31,9 @@ static pthread_t audio_thread;
 static atomic_int audio_run = 0, audio_thread_up = 0;
 static atomic_int level_milli = 0;
 static audio_cb the_cb = NULL;
+static int in_chan = 0;                 /* 0 mix, 1 left, 2 right */
+static int in_nch = 1;                  /* channels the device was opened with */
+void audio_set_channel(int ch) { in_chan = ch >= 0 && ch <= 2 ? ch : 0; }
 static void *the_user = NULL;
 
 /* file source */
@@ -56,15 +59,15 @@ static void deliver(const float *x, int n)
 static HWAVEIN win_in;
 static HANDLE win_ev;
 static WAVEHDR win_hdr[WBUFS];
-static int16_t win_buf[WBUFS][WFRAMES];
+static int16_t win_buf[WBUFS][WFRAMES * 2];
 static char win_names[32][128];
 static int win_n;
 
-static void win_format(WAVEFORMATEX *f, unsigned rate)
+static void win_format(WAVEFORMATEX *f, unsigned rate, int nch)
 {
     memset(f, 0, sizeof *f);
-    f->wFormatTag = WAVE_FORMAT_PCM; f->nChannels = 1; f->nSamplesPerSec = rate;
-    f->wBitsPerSample = 16; f->nBlockAlign = 2; f->nAvgBytesPerSec = rate * 2;
+    f->wFormatTag = WAVE_FORMAT_PCM; f->nChannels = (WORD)nch; f->nSamplesPerSec = rate;
+    f->wBitsPerSample = 16; f->nBlockAlign = (WORD)(2 * nch); f->nAvgBytesPerSec = rate * 2 * nch;
 }
 
 static void to_utf8(const WCHAR *w, char *o, int n) { WideCharToMultiByte(CP_UTF8, 0, w, -1, o, n, NULL, NULL); }
@@ -129,9 +132,9 @@ static void *capture_worker(void *unused)
         if (!win_in) { pthread_mutex_unlock(&pcm_mutex); nap(10000000); continue; }
         int got[WBUFS], ng = 0;
         while (ng < WBUFS && (win_hdr[cur].dwFlags & WHDR_DONE)) {
-            int k = (int)(win_hdr[cur].dwBytesRecorded / 2);
+            int k = (int)(win_hdr[cur].dwBytesRecorded / (2 * in_nch));
             got[ng++] = cur;
-            for (int i = 0; i < k; i++) tmp[i] = win_buf[cur][i] / 32768.0f;
+            for (int i = 0; i < k; i++) tmp[i] = win_buf[cur][i * in_nch + (in_nch > 1 ? in_chan - 1 : 0)] / 32768.0f;
             pthread_mutex_unlock(&pcm_mutex);
             if (k > 0) deliver(tmp, k);
             pthread_mutex_lock(&pcm_mutex);
@@ -159,7 +162,7 @@ int audio_list(char devs[][128], int max)
 static void *capture_worker(void *unused)
 {
     (void)unused;
-    int16_t buf[512];
+    int16_t buf[1024];
     float tmp[512];
     while (atomic_load(&audio_run)) {
         /* Hold the PCM handle only while waiting/reading. snd_pcm_wait() with a
@@ -178,7 +181,8 @@ static void *capture_worker(void *unused)
         pthread_mutex_unlock(&pcm_mutex);
         if (got < 0) { if (recover_failed) nap(50000000); continue; }
         if (got == 0) continue;
-        for (snd_pcm_sframes_t i = 0; i < got; i++) tmp[i] = (float)buf[i] / 32768.0f;
+        int nc = in_nch, off = nc > 1 ? in_chan - 1 : 0;
+        for (snd_pcm_sframes_t i = 0; i < got; i++) tmp[i] = (float)buf[i * nc + off] / 32768.0f;
         deliver(tmp, (int)got);
     }
     return NULL;
@@ -242,15 +246,20 @@ int audio_start(const char *device, unsigned rate, audio_cb cb, void *user, char
     audio_stop();
     the_cb = cb; the_user = user;
     if (!win_ev) win_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
-    WAVEFORMATEX f; win_format(&f, rate);
+    in_nch = in_chan ? 2 : 1;
+    WAVEFORMATEX f; win_format(&f, rate, in_nch);
     HWAVEIN h = NULL;
     UINT id = strcmp(device, "default") ? in_id(device) : WAVE_MAPPER;
     MMRESULT r = waveInOpen(&h, id, &f, (DWORD_PTR)win_ev, 0, CALLBACK_EVENT);
+    if (r != MMSYSERR_NOERROR && in_nch == 2) {      /* a mono device: its only channel */
+        in_nch = 1; win_format(&f, rate, 1);
+        r = waveInOpen(&h, id, &f, (DWORD_PTR)win_ev, 0, CALLBACK_EVENT);
+    }
     if (r != MMSYSERR_NOERROR) { snprintf(status, ns, "Audio open failed (error %u)", (unsigned)r); return -1; }
     for (int i = 0; i < WBUFS; i++) {
         memset(&win_hdr[i], 0, sizeof(WAVEHDR));
         win_hdr[i].lpData = (LPSTR)win_buf[i];
-        win_hdr[i].dwBufferLength = WFRAMES * 2;
+        win_hdr[i].dwBufferLength = WFRAMES * 2 * in_nch;
         waveInPrepareHeader(h, &win_hdr[i], sizeof(WAVEHDR));
         waveInAddBuffer(h, &win_hdr[i], sizeof(WAVEHDR));
     }
@@ -261,7 +270,7 @@ int audio_start(const char *device, unsigned rate, audio_cb cb, void *user, char
     }
     atomic_store(&audio_thread_up, 1);
     waveInStart(h);
-    snprintf(status, ns, "Audio OK: %.80s @ %u Hz", device, rate);
+    snprintf(status, ns, "Audio OK: %.80s @ %u Hz%s", device, rate, in_nch == 2 ? (in_chan == 1 ? ", left" : ", right") : "");
     return 0;
 }
 #else
@@ -283,20 +292,24 @@ int audio_start(const char *device, unsigned rate, audio_cb cb, void *user, char
         snprintf(status, ns, "Device runs at %u Hz, need %u (use a plughw: device)", r, rate);
         snd_pcm_close(p); return -1;
     }
-    if (rc >= 0) rc = snd_pcm_hw_params_set_channels(p, params, 1);
+    /* one channel of a stereo input, or mono (both mixed by the plug device) */
+    int nch = in_chan ? 2 : 1;
+    if (rc >= 0 && nch == 2 && snd_pcm_hw_params_set_channels(p, params, 2) < 0) nch = 1;   /* mono device */
+    if (rc >= 0 && nch == 1) rc = snd_pcm_hw_params_set_channels(p, params, 1);
     snd_pcm_uframes_t period = 512, buffer = 4096;
     if (rc >= 0) rc = snd_pcm_hw_params_set_period_size_near(p, params, &period, 0);
     if (rc >= 0) rc = snd_pcm_hw_params_set_buffer_size_near(p, params, &buffer);
     if (rc >= 0) rc = snd_pcm_hw_params(p, params);
     if (rc >= 0) rc = snd_pcm_prepare(p);
     if (rc < 0) { snprintf(status, ns, "Audio setup failed: %.70s", snd_strerror(rc)); snd_pcm_close(p); return -1; }
+    in_nch = nch;
     pthread_mutex_lock(&pcm_mutex); audio_pcm = p; pthread_mutex_unlock(&pcm_mutex);
     atomic_store(&audio_run, 1);
     if (pthread_create(&audio_thread, NULL, capture_worker, NULL) != 0) {
         snprintf(status, ns, "Audio: cannot start thread"); audio_stop(); return -1;
     }
     atomic_store(&audio_thread_up, 1);
-    snprintf(status, ns, "Audio OK: %s @ %u Hz", device, rate);
+    snprintf(status, ns, "Audio OK: %s @ %u Hz%s", device, rate, in_nch == 2 ? (in_chan == 1 ? ", left" : ", right") : "");
     return 0;
 }
 
@@ -307,7 +320,7 @@ int audio_start_file(const char *path, unsigned rate, double speed, audio_cb cb,
     audio_stop();
     the_cb = cb; the_user = user;
     double fs; long n;
-    float *x = wav_read(path, &fs, &n);
+    float *x = wav_read_ch(path, &fs, &n, in_chan);
     if (!x) { snprintf(status, ns, "Cannot read %.100s", path); return -1; }
     if (fs > rate * 1.01) {
         /* anti-alias low-pass (Blackman windowed sinc, 0.45 * new rate) before decimating */
@@ -372,7 +385,7 @@ audio_out *audio_out_open(const char *device, const char *wav_path, unsigned rat
 #ifdef _WIN32
     char chosen[128];
     UINT id = out_id(device, chosen, sizeof chosen);
-    WAVEFORMATEX f; win_format(&f, rate);
+    WAVEFORMATEX f; win_format(&f, rate, 1);          /* playback stays mono */
     o->ev = CreateEventW(NULL, FALSE, FALSE, NULL);
     MMRESULT r = waveOutOpen(&o->wo, id, &f, (DWORD_PTR)o->ev, 0, CALLBACK_EVENT);
     if (r != MMSYSERR_NOERROR) { snprintf(err, ne, "TX: playback open failed on %.60s (error %u)", chosen, (unsigned)r); CloseHandle(o->ev); free(o); return NULL; }

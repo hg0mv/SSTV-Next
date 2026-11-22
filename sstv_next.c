@@ -1334,10 +1334,21 @@ static void log_dlg_key(KeySym ks)
 }
 
 /* ------------------------------------------------------------- whole window */
+/* input channel row under the devices: Both / Left / Right */
+#define CH_ROW_Y(n) (79 + (n) * 25 + 10)
+static void draw_channel_row(void)
+{
+    int y = CH_ROW_Y(audio_device_count);
+    static const char *lab[3] = {"Both", "Left", "Right"};
+    ui_line(112, y - 4, 406, y - 4, RGB(60, 70, 84), 1);
+    ui_text(F_SMALL, 118, y + 19, "Channel", c.muted);
+    for (int i = 0; i < 3; i++) button(186 + i * 74, y + 2, 68, 24, lab[i], cfg.in_ch == i);
+}
+
 static void draw_audio_menu_overlay(void)
 {
     if (!audio_menu) return;
-    int menu_h = audio_device_count * 25 + 8;
+    int menu_h = audio_device_count * 25 + 8 + 40;
     ui_shadow(104, 78, 310, menu_h, 8, 16, 0.5);
     ui_rrect(104, 78, 310, menu_h, 8, RGB(28, 33, 41), 1);
     ui_rrect_line(104, 78, 310, menu_h, 8, RGB(60, 70, 84), 1);
@@ -1347,6 +1358,7 @@ static void draw_audio_menu_overlay(void)
         ui_text(F_REG, 118, 95 + i * 25 + 3, audio_devices[i], c.text);
         if (sel_) ui_text(F_SMALLB, 380, 95 + i * 25 + 3, "in use", RGB(200, 220, 255));
     }
+    draw_channel_row();
 }
 /* ------------------------------------------------------------ scanner --- */
 /* Goes round the SSTV frequencies (rig in DATA mode: D-L below 10 MHz, D-U above), stays
@@ -2211,6 +2223,7 @@ int main(int argc, char **argv)
     tx_scan(); tx_prepare(1);
 
     audio_device_count = audio_list(audio_devices, 30);
+    audio_set_channel(cfg.in_ch);
     if (test_wav[0]) audio_start_file(test_wav, AUDIO_RATE, test_speed, on_audio, NULL, audio_status, sizeof audio_status);
     else for (int i = 0; i < audio_device_count; i++) if (cfg.audio[0] && !strcmp(audio_devices[i], cfg.audio)) { audio_select(i); break; }
 
@@ -2267,6 +2280,17 @@ int main(int argc, char **argv)
                     draw_scan_button(); draw_rx_msg(); flush_ui(); continue;
                 }
                 if (audio_menu) {
+                    int cy = CH_ROW_Y(audio_device_count) + 2;
+                    if (btn == 1 && by >= cy && by < cy + 24 && bx >= 186 && bx < 186 + 3 * 74) {   /* channel */
+                        int ch = (bx - 186) / 74;
+                        if (ch != cfg.in_ch) {
+                            cfg.in_ch = ch; config_save(); audio_set_channel(ch);
+                            if (test_wav[0]) audio_start_file(test_wav, AUDIO_RATE, test_speed, on_audio, NULL, audio_status, sizeof audio_status);
+                            else if (audio_device_selected >= 0) audio_select(audio_device_selected);
+                            live_reset(lv);
+                        }
+                        draw_audio_menu_overlay(); flush_ui(); continue;
+                    }
                     if (btn == 1 && bx >= 104 && bx <= 414 && by >= 75 && by < 75 + audio_device_count * 25 + 8) {
                         int idx = (by - 79) / 25;
                         if (idx >= 0 && idx < audio_device_count) { test_wav[0] = 0; audio_select(idx); }
