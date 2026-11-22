@@ -7,7 +7,7 @@ a template editor and an ADIF log.
 The radio control (rigctld), sound card handling and ADIF log come from
 [DigiPan Next](https://github.com/hg0mv), the BPSK31 program by the same author.
 
-**Status:** development version (M0.12). Tested with recordings and simulated channels;
+**Status:** development version (0.13). Tested with recordings and simulated channels;
 on-air reports are welcome.
 
 ![Main window](sstv_next_main_window.png)
@@ -285,7 +285,15 @@ the full-height variant is shown then. The MMSSTV-specific modes (MP, MR, ML, ex
 | `config.c` | settings (`~/.config/sstvnext/config`) |
 | `ui.c` | drawing layer: framebuffer, anti-aliased shapes, TrueType text |
 | `sstv_next.c` | the user interface |
+| `version.h` | the version number |
 | `win/` | Windows port |
+
+## Support
+
+SSTV Next is free and always will be. It is written by one radio amateur in his spare
+time; if you enjoy it, you can support its development on Ko-fi:
+[ko-fi.com/hg0mv](https://ko-fi.com/hg0mv). The **Support** button in the top right
+corner of the program opens the same page.
 
 ## License
 

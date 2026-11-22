@@ -38,8 +38,15 @@
 #include "mot.h"
 #include "rsfile.h"
 #include "fskid.h"
+#include "version.h"
+#ifdef _WIN32
+#include <shellapi.h>
+#else
+#include <sys/wait.h>
+#endif
 
-#define APP        "SSTV Next M0.12"
+#define APP        "SSTV Next " SSTVNEXT_VERSION
+#define SUPPORT_URL "https://ko-fi.com/hg0mv"
 #define AUDIO_RATE 11025
 #define W0 1280
 #define H0 820
@@ -584,6 +591,25 @@ static void win_setup_home(void)
     _putenv_s("HOME", h);
 }
 #endif
+/* open a web page in the default browser, without waiting for it */
+static void open_url(const char *url)
+{
+#ifdef _WIN32
+    ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
+#else
+    pid_t pid = fork();
+    if (pid == 0) {                      /* double fork: the browser is not our child, no zombie */
+        if (fork() == 0) {
+            setsid();
+            execlp("xdg-open", "xdg-open", url, (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    if (pid > 0) waitpid(pid, NULL, 0);
+#endif
+}
+
 static int on_x_io_error(Display *d) { (void)d; rig_ptt(0); _exit(1); }   /* never leave the radio keyed */
 
 /* ================================================================ receive */
@@ -1501,6 +1527,15 @@ static void draw_logo(int x, int y)
     for (int i = 0; i < 3; i++) ui_rrect(x + 5, y + 6 + i * 5, 14, 3, 1, bars[i], 0.95);
 }
 
+/* place of the Support button in the header, left of the callsign */
+static void support_rect(int *x, int *w)
+{
+    int right = width - 12;
+    if (cfg.call[0]) right -= ui_text_w(F_BOLD, cfg.call) + 26 + 8;
+    *w = ui_text_w(F_BOLD, "Support") + 28;
+    *x = right - *w;
+}
+
 static void draw(void)
 {
     fill(0, 0, width, height, c.bg);
@@ -1508,8 +1543,8 @@ static void draw(void)
     for (int j = 0; j < 36; j++) ui_fill(0, j, width, 1, ui_mix(RGB(26, 32, 41), RGB(17, 21, 28), j / 35.0));
     draw_logo(12, 6);
     int tx = 44 + ui_text(F_TITLE, 44, 23, "SSTV Next", c.text);
-    ui_text(F_SMALL, tx + 8, 23, APP + 10, c.muted);
-    ui_text(F_SMALL, tx + 46, 23, "slow-scan television transceiver", RGB(110, 118, 129));
+    tx += 8 + ui_text(F_SMALL, tx + 8, 23, SSTVNEXT_VERSION, c.muted);
+    ui_text(F_SMALL, tx + 14, 23, "slow-scan television transceiver", RGB(110, 118, 129));
     if (cfg.call[0]) {
         int w = ui_text_w(F_BOLD, cfg.call) + 26;
         ui_rrect(width - w - 12, 7, w, 22, 11, RGB(18, 52, 32), 1);
@@ -1517,6 +1552,11 @@ static void draw(void)
         ui_circle(width - w - 1, 18, 3.5, c.green, 1);
         ui_text(F_BOLD, width - w + 6, 23, cfg.call, RGB(126, 231, 135));
     }
+    int sx, sw; support_rect(&sx, &sw);              /* Support button: opens the Ko-fi page */
+    ui_rrect(sx, 7, sw, 22, 11, RGB(58, 24, 36), 1);
+    ui_rrect_line(sx, 7, sw, 22, 11, RGB(219, 97, 130), 0.8);
+    ui_circle(sx + 11, 18, 3.5, RGB(255, 123, 160), 1);
+    ui_text(F_BOLD, sx + 18, 23, "Support", RGB(255, 182, 202));
     /* toolbar */
     ui_fill(0, 36, width, 58, c.panel);
     ui_fill(0, 36, width, 1, RGB(38, 45, 55));
@@ -2232,6 +2272,10 @@ int main(int argc, char **argv)
                         if (idx >= 0 && idx < audio_device_count) { test_wav[0] = 0; audio_select(idx); }
                     }
                     audio_menu = 0; draw(); continue;
+                }
+                if (btn == 1) {
+                    int sx, sw; support_rect(&sx, &sw);
+                    if (hit(bx, by, sx, 7, sw, 22)) { open_url(SUPPORT_URL); continue; }
                 }
                 if (log_bar_click(bx, by, btn)) { if (log_dlg) draw(); else { draw_log_bar(); draw_tx_panel(); flush_ui(); } continue; }
                 if (edit_mode && ed_click(bx, by, btn)) { if (!edit_mode) draw(); continue; }

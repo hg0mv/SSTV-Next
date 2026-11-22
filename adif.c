@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "adif.h"
+#include "version.h"
 
 Qso *qsos = NULL;
 int  nqso = 0;
@@ -76,7 +77,11 @@ void adif_open(void)
     fclose(f);
 }
 
-static void adif_header(FILE *f) { fputs("SSTV Next ADIF log\n<ADIF_VER:5>3.1.4 <PROGRAMID:8>SSTVNext <PROGRAMVERSION:4>M0.1 <EOH>\n\n", f); }
+static void adif_header(FILE *f)
+{
+    fprintf(f, "SSTV Next ADIF log\n<ADIF_VER:5>3.1.4 <PROGRAMID:8>SSTVNext <PROGRAMVERSION:%d>%s <EOH>\n\n",
+            (int)strlen(SSTVNEXT_VERSION), SSTVNEXT_VERSION);
+}
 
 static int log_rewrite(void)
 {

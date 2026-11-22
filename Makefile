@@ -46,7 +46,7 @@ WINAPP   = $(addprefix $(WINOBJ)/,$(APP:.o=.w.o)) $(WINOBJ)/winx.w.o $(WINOBJ)/g
 WINCORE  = $(addprefix $(WINOBJ)/,$(CORE:.o=.w.o))
 WINDRM   = $(addprefix $(WINOBJ)/,$(DRM:.o=.w.o)) $(WINOBJ)/wav.w.o
 WINDIST  = win/dist/SSTVNext
-WINLIBS  = -static -lwinmm -lgdi32 -luser32 -lws2_32 -ladvapi32 -lpthread -lm
+WINLIBS  = -static -lwinmm -lgdi32 -luser32 -lws2_32 -ladvapi32 -lshell32 -lpthread -lm
 
 win: $(WINDIST)/sstv_next.exe $(WINDIST)/sstv_dec.exe $(WINDIST)/sstv_enc.exe $(WINDIST)/sstv_combine.exe $(WINDIST)/drm_dec.exe $(WINDIST)/drm_enc.exe
 	@mkdir -p $(WINDIST)/fonts
