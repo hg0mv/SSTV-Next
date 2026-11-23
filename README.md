@@ -182,7 +182,7 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     `%F` frequency, and the report on the last received picture (or the one being viewed):
     `%S` SNR, `%O` mistuning, `%K` clock error, `%Q` all three in one line.
   - Templates: name + **Save** (saving under a new name makes a copy), **New**,
-    **Delete tpl**, `<` `>` to switch. **Done** saves and returns. Three templates are
+    **Delete tpl**, `<` `>` to switch. **Done** saves and returns. Four templates are
     created on the first start: *Call*, *CQ*, *QSO reply* and *Report* (QSO reply with
     the signal report). They are stored in
     `~/.config/sstvnext/templates/*.tpl` (text files).
