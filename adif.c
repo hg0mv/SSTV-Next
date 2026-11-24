@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "adif.h"
+#include "fileswap.h"
 #include "version.h"
 
 Qso *qsos = NULL;
@@ -90,7 +91,7 @@ static int log_rewrite(void)
     adif_header(f);
     for (int i = 0; i < nqso; i++) { fputs(qsos[i].raw, f); fputc('\n', f); }
     int ok = (fflush(f) == 0 && fsync(fileno(f)) == 0); fclose(f);
-    if (!ok || rename(tmp, log_path) != 0) return -1;
+    if (!ok || file_replace(tmp, log_path) != 0) return -1;
     return 0;
 }
 

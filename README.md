@@ -212,8 +212,9 @@ standard, with a signal bit-identical to QSSTV's).
   signal is found, a `DIGITAL` badge, the mode (A/B/E, QAM, protection, bandwidth) and the
   sender's callsign are shown; below the picture the received segments, the SNR and the
   frequency offset. The picture builds up during reception (JPEG). Mistuning up to
-  ±150 Hz, sound card clock errors of several hundred ppm and HF fading (multipath) are
-  handled. The received file is saved as it was sent in `~/sstv/rx/digital`, and the
+  ±150 Hz, sound card clock errors up to about ±2000 ppm (the receiver tracks the
+  clock, starting from the own clock error the program has learned) and HF fading
+  (multipath) are handled. The received file is saved as it was sent in `~/sstv/rx/digital`, and the
   picture as PNG in the gallery. If the signal goes and some segments are missing, the part
   received is saved marked `_part`.
 - **Transmission**: after the 25 analog modes, the **Mode** button offers **Digital DRM**,

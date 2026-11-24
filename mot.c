@@ -98,8 +98,10 @@ int mot_tx_init(mot_tx *m, const uint8_t *data, int len, const char *name, int n
 			list_add(m, i);
 		}
 	} else {
+		int k = 0;
 		for (int i = 0; i < nfix; i++) {
-			if (i % 30 == 0) add_headers(m);
+			if (fix[i] < 0 || fix[i] >= m->nseg) continue;   /* a request from the air: only real segments */
+			if (k++ % 30 == 0) add_headers(m);
 			list_add(m, fix[i]);
 		}
 	}
@@ -494,9 +496,11 @@ int mot_rx_bsr(const mot_rx *r, char *out, int max)
 	long tot = body_total(o);
 	int nseg = tot > 0 && o->segsize ? (int)((tot + o->segsize - 1) / o->segsize) : (o->last >= 0 ? o->last + 1 : 0);
 	if (!nseg) { for (int i = 0; i < o->nseg; i++) if (o->seg[i]) nseg = i + 1; }
+	if (max < 64) return 0;
 	int n = 0, first = 1, prev = -10, run = 0, last_missing = -1;
+	max -= 16;                                /* room for the closing lines, always */
 	n += snprintf(out + n, max - n, "%u\nH_OK\n%d\n", o->tid, o->segsize ? o->segsize : 1);
-	for (int i = 0; i < nseg && n < max - 16; i++) {
+	for (int i = 0; i < nseg && n < max - 20; i++) {
 		if (i < o->nseg && o->seg[i]) continue;
 		if (first) { n += snprintf(out + n, max - n, "%d\n", i); first = 0; }
 		else if (i == prev + 1) run = 1;
@@ -507,7 +511,10 @@ int mot_rx_bsr(const mot_rx *r, char *out, int max)
 		prev = i; last_missing = i;
 	}
 	if (first) return 0;                      /* nothing missing */
+	max += 16;
+	if (n > max - 16) n = max - 16;
 	if (run) n += snprintf(out + n, max - n, "-1\n%d\n", last_missing);
+	if (n > max - 5) n = max - 5;
 	n += snprintf(out + n, max - n, "-99\n");
 	return n;
 }

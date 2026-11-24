@@ -31,6 +31,7 @@ typedef struct {
 	/* ---- internals ---- */
 	int infs;
 	double rs_pos, rs_step;         /* resampler */
+	double rs_base, sro;            /* nominal step; sample clock error (tracked, + own clock) */
 	float *rs_hist; int rs_nh;
 	double *fir; int nfir;
 	double complex *firbuf; int firpos;
@@ -70,5 +71,8 @@ int  drm_rx_init(drm_rx *r, int input_fs, mot_done_fn done, void *user);
 void drm_rx_free(drm_rx *r);
 void drm_rx_reset(drm_rx *r);
 void drm_rx_process(drm_rx *r, const float *x, int n);
+/* own sound card clock error (ppm as the analog decoder measures the slant, NAN unknown):
+   the starting point of the clock tracking */
+void drm_rx_set_clock(drm_rx *r, double ppm);
 
 #endif

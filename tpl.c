@@ -27,6 +27,7 @@
 #endif
 
 #include "tpl.h"
+#include "fileswap.h"
 #include "imgio.h"
 
 /* ------------------------------------------------------------- fonts --- */
@@ -500,7 +501,7 @@ int tpl_save(const tpl *t, const char *dir)
                 tn[o->type], o->x, o->y, o->w, o->h, o->fill[0], o->fill[1], o->fill[2], o->line[0], o->line[1], o->line[2],
                 o->filled, o->lw, o->alpha, o->shadow, o->outline, o->font[0] ? o->font : "-", o->text);
     }
-    int ok = fclose(f) == 0 && rename(tmp, p) == 0;
+    int ok = fclose(f) == 0 && file_replace(tmp, p) == 0;
     return ok ? 0 : -1;
 }
 

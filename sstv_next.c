@@ -1156,8 +1156,8 @@ static char *log_field_ptr(int idx, size_t *mx)
 {
     switch (idx) {
     case 0: *mx = sizeof his_call; return his_call;
-    case 1: *mx = sizeof lg_rs; return lg_rs;
-    case 2: *mx = sizeof lg_rr; return lg_rr;
+    case 1: *mx = 4; return lg_rs;              /* RST: 3 digits (the box shows no more) */
+    case 2: *mx = 4; return lg_rr;
     default: *mx = sizeof lg_freq; return lg_freq;
     }
 }
@@ -2291,6 +2291,7 @@ int main(int argc, char **argv)
     if (cfg.drm_size < 0 || cfg.drm_size >= NDRMSIZE) cfg.drm_size = 0;
     if (cfg.drm_kb < 0 || cfg.drm_kb >= NDRMKB) cfg.drm_kb = 3;
     cfg.drm_prot = !!cfg.drm_prot; cfg.drm_so = !!cfg.drm_so;
+    if (cfg.drm_rs < 0 || cfg.drm_rs > 4) cfg.drm_rs = 0;        /* (rs_kk() of anything else is 0: a division) */
     if (!strcmp(cfg.tx_mode, "drm")) tx_mode_i = NMODEIDS;
     for (int i = 0; i < NMODEIDS; i++) {
         if (!strcmp(MODE_ID(i), cfg.tx_mode)) tx_mode_i = i;

@@ -23,14 +23,16 @@ int main(int argc, char **argv)
 {
 	int verbose = 0, opt = 1;
 	const char *bsrout = NULL;
+	double clk = 0;                 /* own sound card clock error, ppm (-k) */
 	while (opt < argc && argv[opt][0] == '-') {
 		if (!strcmp(argv[opt], "-v")) verbose = 1;
 		else if (!strcmp(argv[opt], "-d")) drm_rx_debug++;
 		else if (!strcmp(argv[opt], "-o") && opt + 1 < argc) outdir = argv[++opt];
 		else if (!strcmp(argv[opt], "-b") && opt + 1 < argc) bsrout = argv[++opt];
+		else if (!strcmp(argv[opt], "-k") && opt + 1 < argc) clk = atof(argv[++opt]);
 		opt++;
 	}
-	if (opt >= argc) { fprintf(stderr, "usage: drm_dec [-v] [-o dir] [-b bsr.txt] in.wav [more.wav ...]\n"); return 1; }
+	if (opt >= argc) { fprintf(stderr, "usage: drm_dec [-v] [-o dir] [-b bsr.txt] [-k clock_ppm] in.wav [more.wav ...]\n"); return 1; }
 	double fs = 0; long n = 0;
 	float *x = NULL;
 	for (int a = opt; a < argc; a++) {            /* several files: one after the other */
@@ -46,6 +48,7 @@ int main(int argc, char **argv)
 	}
 	drm_rx r;
 	drm_rx_init(&r, (int)fs, done, NULL);
+	if (clk != 0) drm_rx_set_clock(&r, clk);
 	int blk = (int)fs / 10, st = -1;
 	long fo = -1;
 	for (long i = 0; i < n; i += blk) {

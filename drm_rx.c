@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include "drm_rx.h"
 
+#define SRO_GAIN 0.02          /* clock tracking: share of the timing error per symbol */
+
 int drm_rx_debug;
 
 #define FS        DRM_RX_FS
@@ -86,7 +88,7 @@ int drm_rx_init(drm_rx *r, int infs, mot_done_fn done, void *user)
 			rs_kernel[i] = (float)(sinc(t) * win);
 		}
 	}
-	r->rs_step = (double)infs / FS;
+	r->rs_base = r->rs_step = (double)infs / FS;
 	r->rs_nh = 4096;
 	r->rs_hist = calloc(r->rs_nh, sizeof(float));
 	/* band filter: low pass +-1650 Hz at 12 kHz */
@@ -546,6 +548,13 @@ static void equalize(drm_rx *r, long j)
 		double e = tau - r->tslope0;
 		if (e > 3) e = 3; else if (e < -3) e = -3;
 		r->tacc += 0.05 * (e - r->tacc);
+		/* sample clock: a timing error that keeps growing is a clock difference between
+		 * the sender's and our sound card. Its integral steers the input resampler, so
+		 * that thousands of ppm are followed, not only the few hundred the timing steps
+		 * alone could keep up with. */
+		r->sro += SRO_GAIN * r->tacc / r->symlen;
+		if (r->sro > 0.006) r->sro = 0.006; else if (r->sro < -0.006) r->sro = -0.006;
+		r->rs_step = r->rs_base * (1 + r->sro);
 	}
 
 	int fs = sj->fs;
@@ -662,12 +671,18 @@ static void at12k(drm_rx *r, double x)
 	while (r->state == DRM_RX_SYNC && r->wpos + r->nfft + 2 <= have) track_symbol(r);
 }
 
+void drm_rx_set_clock(drm_rx *r, double ppm)
+{
+	/* the analog decoder's sign: + = our card takes fewer samples than nominal, so less
+	   input is taken per 12 kHz sample */
+	r->sro = isnan(ppm) ? 0 : -ppm * 1e-6;
+	r->rs_step = r->rs_base * (1 + r->sro);
+}
+
 void drm_rx_process(drm_rx *r, const float *x, int n)
 {
-	if (r->infs == FS) { for (int i = 0; i < n; i++) at12k(r, x[i]); return; }
-	double scale = r->infs > FS ? (double)FS / r->infs : 1.0;      /* anti-alias */
-	double fc = RS_FC / r->infs * (r->infs > FS ? 1.0 : 1.0);
-	(void)scale;
+	/* always through the resampler (also at 12 kHz): its ratio follows the clock error */
+	double fc = RS_FC / r->infs;
 	double tstep = 2 * fc;                    /* kernel argument per input sample */
 	int hw = (int)ceil(RS_HW / tstep) + 1;
 	for (int i = 0; i < n; i++) {

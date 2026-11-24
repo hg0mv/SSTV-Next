@@ -57,6 +57,8 @@ struct live {
     int     nrec;
     time_t  last_saved;
     double  own_ppm;     /* own sound card clock (live_set_clock), NAN unknown */
+    double  drm_clk;     /* the value the digital receiver was given */
+    int     drm_clk_set;
     float  *f;
     double *P, *Q;
     long    n, cap;
@@ -658,7 +660,15 @@ static void *engine(void *arg)
             fskid_process(&l->fid, f);
             tone_row(l, tmp[i]);
         }
-        if (avail) { drm_rx_process(&l->drm, tmp, (int)avail); drm_status(l); }
+        if (avail) {
+            /* the digital receiver starts its clock tracking from our own clock error */
+            pthread_mutex_lock(&l->omx); double own = l->own_ppm; pthread_mutex_unlock(&l->omx);
+            if (!l->drm_clk_set || (own != l->drm_clk && !(isnan(own) && isnan(l->drm_clk)))) {
+                drm_rx_set_clock(&l->drm, own);
+                l->drm_clk = own; l->drm_clk_set = 1;
+            }
+            drm_rx_process(&l->drm, tmp, (int)avail); drm_status(l);
+        }
 
         live_status st; pthread_mutex_lock(&l->omx); st = l->st; pthread_mutex_unlock(&l->omx);
         if (st.state == LIVE_RX && atomic_exchange(&l->stop_req, 0)) finish_rx(l, 2);

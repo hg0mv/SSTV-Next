@@ -48,7 +48,8 @@ float *wav_read_ch(const char *path, double *fs, long *n, int chan)
             unsigned char b[40] = {0};
             uint32_t take = sz < 40 ? sz : 40;
             if (fread(b, 1, take, fp) != take) break;
-            if (sz > take) fseek(fp, (long)(sz - take), SEEK_CUR);
+            if (sz > 0x7fffffffu) break;                            /* broken size (and a long is 32 bit on Windows) */
+            if (sz > take && fseek(fp, (long)(sz - take + (sz & 1)), SEEK_CUR)) break;
             fmt  = rd16(b);
             ch   = rd16(b + 2);
             rate = rd32(b + 4);
@@ -56,23 +57,31 @@ float *wav_read_ch(const char *path, double *fs, long *n, int chan)
             if (fmt == 0xFFFE && take >= 26) fmt = rd16(b + 24);  /* WAVE_FORMAT_EXTENSIBLE */
             have_fmt = 1;
         } else if (!memcmp(ck, "data", 4)) {
-            if (!have_fmt || (fmt != 1 && fmt != 3) || ch < 1 ||
-                (bits != 8 && bits != 16 && bits != 24 && bits != 32)) {
-                fprintf(stderr, "%s: unsupported WAV format (fmt=%d, %d bit)\n", path, fmt, bits);
+            if (!have_fmt || (fmt != 1 && fmt != 3) || (fmt == 3 && bits != 32) || ch < 1 ||
+                (bits != 8 && bits != 16 && bits != 24 && bits != 32) || rate < 1000 || rate > 400000) {
+                fprintf(stderr, "%s: unsupported WAV format (fmt=%d, %d bit, %u Hz, %d channels)\n", path, fmt, bits, rate, ch);
                 break;
             }
-            /* read the data chunk (or to EOF if the size is bogus) */
-            size_t cap = (sz && sz != 0xFFFFFFFFu) ? sz : 1 << 20, len = 0;
+            /* read the data chunk (to EOF if the size is bogus); the buffer grows with what
+               is really there, a size field of 4 GB does not allocate 4 GB */
+            size_t want = (sz && sz != 0xFFFFFFFFu) ? sz : (size_t)-1;
+            size_t cap = want < (1u << 20) ? (want ? want : 1) : 1u << 20, len = 0;
             unsigned char *raw = malloc(cap);
             size_t r;
-            while ((r = fread(raw + len, 1, cap - len, fp)) > 0) {
+            while (raw && (r = fread(raw + len, 1, (cap - len < want - len ? cap - len : want - len), fp)) > 0) {
                 len += r;
-                if (sz && sz != 0xFFFFFFFFu && len >= sz) break;
-                if (len == cap) { cap *= 2; raw = realloc(raw, cap); }
+                if (len >= want) break;
+                if (len == cap) {
+                    unsigned char *nr = realloc(raw, cap * 2);
+                    if (!nr) break;
+                    raw = nr; cap *= 2;
+                }
             }
+            if (!raw) break;
             int bps = bits / 8, frame = bps * ch;
             long frames = (long)(len / (size_t)frame);
             out = malloc((size_t)(frames ? frames : 1) * sizeof(float));
+            if (!out) { free(raw); break; }
             int pick = chan >= 1 && chan <= ch ? chan - 1 : -1;     /* one channel, or all mixed */
             for (long i = 0; i < frames; i++) {
                 if (pick >= 0) { out[i] = (float)sample_at(raw + (size_t)i * frame + (size_t)pick * bps, fmt, bits); continue; }
@@ -86,7 +95,7 @@ float *wav_read_ch(const char *path, double *fs, long *n, int chan)
             *n = frames;
             break;
         } else {
-            fseek(fp, (long)(sz + (sz & 1)), SEEK_CUR);
+            if (sz > 0x7fffffffu || fseek(fp, (long)(sz + (sz & 1)), SEEK_CUR)) break;
         }
     }
     fclose(fp);
