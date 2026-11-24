@@ -404,7 +404,7 @@ typedef struct {
 } uifont;
 
 static uifont fonts[F_COUNT];
-static const float font_px[F_COUNT] = { 13, 13, 11.5f, 11.5f, 14, 21, 12.5f };
+static const float font_px[F_COUNT] = { 14, 14, 13, 13, 15, 22, 13.5f };
 
 static unsigned char *read_file(const char *path)
 {

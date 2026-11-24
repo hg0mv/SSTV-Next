@@ -232,7 +232,7 @@ static void init_palette(void)
 {
     /* dark theme: deep blue-grey surfaces, blue accent for controls, teal for receive, orange/red for transmit */
     c.bg = RGB(13, 17, 23);     c.panel = RGB(22, 27, 34);   c.panel2 = RGB(33, 39, 48);
-    c.grid = RGB(48, 56, 68);   c.text = RGB(230, 237, 243); c.muted = RGB(139, 148, 158);
+    c.grid = RGB(48, 56, 68);   c.text = RGB(230, 237, 243); c.muted = RGB(178, 187, 197);
     c.green = RGB(86, 211, 100); c.cyan = RGB(88, 166, 255); c.blue = RGB(31, 111, 235);
     c.yellow = RGB(242, 204, 96); c.red = RGB(248, 81, 73);  c.black = RGB(1, 4, 9);
     c.accent = RGB(47, 129, 247); c.accent2 = RGB(45, 212, 191); c.tx = RGB(240, 136, 62);
@@ -950,7 +950,7 @@ static void draw_rx_status(void)
                 x += kv(x, ty, isnan(own) ? "slant" : "clock", v, c.text);
             }
             snprintf(v, sizeof v, "%+.0f Hz", s->offset);              x += kv(x, ty, "offset", v, fabs(s->offset) > 50 ? c.yellow : c.text);
-            if (s->state != LIVE_RX) ui_text(F_SMALL, LX + LPW - ui_text_w(F_SMALL, "last picture") - 4, ty, "last picture", c.muted);
+            if (s->state != LIVE_RX && x < LX + LPW - ui_text_w(F_SMALL, "last picture") - 4) ui_text(F_SMALL, LX + LPW - ui_text_w(F_SMALL, "last picture") - 4, ty, "last picture", c.muted);
         } else {
             ui_circle(x + 5, ty - 4, 4, c.accent2, 0.9);
             ui_text(F_SMALL, x + 16, ty, "Idle - listening on all modes", c.muted);
@@ -1301,7 +1301,7 @@ static void draw_rig_dialog(void)
     int dx = (width - DLG_W) / 2, dy = DLG_Y;
     dialog_frame(dx, dy, DLG_W, DLG_H, "Radio / CAT setup", "Tab: next field    Esc: close");
     ui_text(F_SMALL, dx + 20, dy + 63, "Callsign", c.muted); field_box(dx + 90, dy + 44, 150, 28, cfg.call, rig_focus == 0);
-    ui_text(F_SMALL, dx + 270, dy + 63, "PTT", c.muted); button(dx + 310, dy + 44, 200, 28, cfg_cat ? "CAT (Hamlib rigctld)" : "None (VOX / manual)", cfg_cat);
+    ui_text(F_SMALL, dx + 270, dy + 63, "PTT", c.muted); button(dx + 310, dy + 44, 130, 28, "VOX / manual", !cfg_cat); button(dx + 446, dy + 44, 150, 28, "CAT (rigctld)", cfg_cat);
     char hd[80]; snprintf(hd, sizeof hd, "Radio model - type to search   (%d of %d)", rig_nvis, rig_nmodels);
     ui_text(F_SMALL, dx + 20, dy + 100, hd, c.muted);
     field_box(dx + 20, dy + 108, 600, 28, rig_filter, rig_focus == 1);
@@ -1339,7 +1339,11 @@ static void draw_rig_dialog(void)
     if (btn != 1) return;
     int dx0 = (width - DLG_W) / 2;
     if (hit(rx, ry, 90, 44, 150, 28)) { if (rig_focus == 0) field_click(F_REG, dx0 + 90, 150, cfg.call, bx); rig_focus = 0; }
-    else if (hit(rx, ry, 310, 44, 200, 28)) cfg_cat = !cfg_cat;
+    else if (hit(rx, ry, 310, 44, 130, 28)) {          /* VOX: takes effect at once (rigctld stopped, saved) */
+        if (tx_active()) snprintf(rig_status, sizeof rig_status, "Stop the transmission first");
+        else { cfg_cat = 0; rig_filter[0] = 0; rig_refilter(); rig_do_apply(); }
+    }
+    else if (hit(rx, ry, 446, 44, 150, 28)) { cfg_cat = 1; snprintf(rig_status, sizeof rig_status, "Select the radio model and port, then Apply"); }
     else if (hit(rx, ry, 20, 108, 600, 28)) { if (rig_focus == 1) field_click(F_REG, dx0 + 20, 600, rig_filter, bx); rig_focus = 1; }
     else if (hit(rx, ry, 20, 142, 600, DLG_ROWS * 22 + 4)) { int i = rig_scroll + (ry - 142 - 2) / 22; if (i >= 0 && i < rig_nvis) { rig_select_vis(i); cfg_cat = 1; } }
     else if (hit(rx, ry, 60, 352, 300, 28)) { if (rig_focus == 2) field_click(F_REG, dx0 + 60, 300, cfg_port, bx); rig_focus = 2; }
@@ -1349,7 +1353,7 @@ static void draw_rig_dialog(void)
         else { int k = -1; for (int i = 0; i < rig_nports; i++) if (!strcmp(rig_ports[i], cfg_port)) k = i; snprintf(cfg_port, sizeof cfg_port, "%.90s", rig_ports[(k + 1) % rig_nports]); }
     }
     else if (hit(rx, ry, 500, 352, 100, 28)) { int k = 0; for (int i = 0; i < 6; i++) if (rig_bauds[i] == cfg_baud) k = i; cfg_baud = rig_bauds[(k + 1) % 6]; }
-    else if (hit(rx, ry, 20, 412, 100, 28)) { cfg_cat = cfg_cat || cfg_model > 0 || rig_is_numeric(rig_filter); draw_rig_dialog(); flush_ui(); rig_do_apply(); }
+    else if (hit(rx, ry, 20, 412, 100, 28)) { cfg_cat = cfg_cat || rig_is_numeric(rig_filter); draw_rig_dialog(); flush_ui(); rig_do_apply(); }
     else if (hit(rx, ry, 130, 412, 110, 28)) { if (tx_active()) snprintf(rig_status, sizeof rig_status, "Stop the transmission first"); else { cfg_cat = 0; rig_do_apply(); } }
     else if (hit(rx, ry, 250, 412, 80, 28)) rig_dlg_close();
 }
@@ -1357,7 +1361,7 @@ static void rig_dlg_key(KeySym ks, const char *kb, int kl)
 {
     if (ks == XK_Escape) { rig_dlg_close(); return; }
     if (ks == XK_Tab || ks == XK_ISO_Left_Tab) { rig_focus = (rig_focus + 1) % 3; return; }
-    if (ks == XK_Return || ks == XK_KP_Enter) { cfg_cat = cfg_cat || cfg_model > 0 || rig_is_numeric(rig_filter); draw_rig_dialog(); flush_ui(); rig_do_apply(); return; }
+    if (ks == XK_Return || ks == XK_KP_Enter) { cfg_cat = cfg_cat || rig_is_numeric(rig_filter); draw_rig_dialog(); flush_ui(); rig_do_apply(); return; }
     if (ks == XK_Up || ks == XK_Down || ks == XK_Prior || ks == XK_Next) {
         int i = rig_vis_index(), d = ks == XK_Up ? -1 : ks == XK_Down ? 1 : ks == XK_Prior ? -DLG_ROWS : DLG_ROWS;
         rig_select_vis(i < 0 ? (d > 0 ? 0 : rig_nvis - 1) : i + d); if (cfg_model > 0) cfg_cat = 1;
@@ -1669,7 +1673,7 @@ static void draw(void)
     ui_text(F_SMALL, 378, 63, "RX mode", c.muted);
     button(440, 43, 140, 32, rx_force < 0 ? "Auto (all modes)" : sstv_mode_at(rx_force)->name, rx_force >= 0);
     button(590, 43, 100, 32, "Save now", 0);
-    button(700, 43, 90, 32, "Radio", rig_enabled);
+    button(700, 43, 90, 32, cfg_cat ? "Radio" : "Radio: VOX", rig_enabled);
     button(800, 43, 90, 32, cfg.nr ? "QRM filter" : "QRM filt off", cfg.nr);
     draw_scan_button();
     draw_rx_msg();
@@ -1912,8 +1916,10 @@ static void draw_editor_tools(void)
       eb_area(x + 46, y + 74, w - 56, 26, B_TEXTF); }
     { static const char *mac[10][2] = { {"%M","my call"}, {"%C","his"}, {"%R","RST"}, {"%T","UTC"}, {"%D","date"}, {"%F","MHz"},
                                         {"%S","SNR"}, {"%O","offset"}, {"%K","clock"}, {"%Q","report"} };
-      int mx = x + 46;
-      for (int i = 0; i < 10; i++) { mx += ui_text(F_SMALLB, mx, y + 116, mac[i][0], c.cyan) + 3; mx += ui_text(F_SMALL, mx, y + 116, mac[i][1], c.muted) + 9; } }
+      int mx = x + 46, tw = 0;                       /* spread the ten over the row, whatever the font size */
+      for (int i = 0; i < 10; i++) tw += ui_text_w(F_SMALLB, mac[i][0]) + 3 + ui_text_w(F_SMALL, mac[i][1]);
+      int gap = (w - 56 - tw) / 9; if (gap > 12) gap = 12; if (gap < 3) gap = 3;
+      for (int i = 0; i < 10; i++) { mx += ui_text(F_SMALLB, mx, y + 116, mac[i][0], c.cyan) + 3; mx += ui_text(F_SMALL, mx, y + 116, mac[i][1], c.muted) + gap; } }
 
     elabel(x + 10, y + 142, "Font");
     eb(x + 46, y + 124, 26, 26, "<", 0, B_FONT_P);

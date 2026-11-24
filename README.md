@@ -102,7 +102,9 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
   The program works at 11025 Hz; plughw converts on any card.
 - **Radio**: rig model, serial port and speed. On the first start the callsign and rig
   settings are taken from DigiPan Next. The program runs its own rigctld on port 14533,
-  so it can run together with DigiPan Next.
+  so it can run together with DigiPan Next. PTT: **VOX / manual** (no CAT - the radio's
+  VOX keys it; takes effect at once and stops rigctld) or **CAT (rigctld)** (choose the
+  model and port, then Apply). The toolbar button reads "Radio: VOX" when CAT is off.
 - **Reception** is automatic. The mode comes from the VIS code; if the VIS was missed
   (weak signal, QSB, switched on in the middle of a picture), from the timing of the sync
   pulses after about 10 lines, with the mistuning measured from the sync pulses as well.
