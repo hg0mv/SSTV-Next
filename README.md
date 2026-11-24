@@ -44,7 +44,7 @@ on-air reports are welcome.
 - **Template editor** (similar to MMSSTV): text, shapes and pictures with macros
   (`%M` my call, `%C` his call, `%R` RST, `%T` time, `%D` date, `%F` frequency, `%Q` the
   signal report).
-- **Rig control** via Hamlib rigctld (CAT frequency, PTT), ADIF log shared with DigiPan Next.
+- **Rig control** via Hamlib rigctld (CAT frequency, PTT), own ADIF log.
 
 ## Building on Linux
 
@@ -201,9 +201,11 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
   - On transmission (analog modes) it is switched with the **FSK ID on/off** button below
     the Mode row (on by default): your callsign is sent in about 2 seconds after the picture.
   - Works down to about 8 dB SNR and ±100 Hz mistuning.
-- **Log**: Call, RST (595 by default), MHz (read from the radio) → **Log QSO**. By default it
-  writes the same `~/digipan_log.adi` file as DigiPan Next, MODE=SSTV, with the exact mode in
-  the COMMENT field.
+- **Log**: Call, RST (595 by default), MHz (read from the radio) → **Log QSO**. It writes its
+  own `~/sstvnext_log.adi` (`-l` for another file), MODE=SSTV, with the exact mode in the
+  COMMENT field. Up to 0.12 the QSOs went into DigiPan Next's `~/digipan_log.adi`; on the
+  first start of 0.13 the SSTV QSOs found there are copied into the new log (DigiPan's
+  file is left as it is).
 
 ## Digital SSTV (HamDRM)
 

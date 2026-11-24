@@ -15,7 +15,7 @@ extern int  nqso;
 extern char log_path[300];
 
 const char *band_of(double mhz);
-void adif_open(void);                         /* loads log_path (default ~/digipan_log.adi) */
+void adif_open(void);                         /* loads log_path (default ~/sstvnext_log.adi) */
 
 /* Appends one QSO. start/end: UTC times. Returns 0, or -1 with a message. */
 int  adif_log(const char *call, double mhz, const char *rst_s, const char *rst_r,

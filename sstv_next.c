@@ -2236,7 +2236,7 @@ static void usage(const char *prog)
                     "  starts and stops Hamlib's rigctld by itself and remembers the settings.\n"
                     "  -r  use an already running rigctld instead ('none' = no PTT control / VOX)\n"
                     "  -c  your callsign (saved; %%M in the picture templates)\n"
-                    "  -l  ADIF log file (default ~/digipan_log.adi, shared with DigiPan)\n"
+                    "  -l  ADIF log file (default ~/sstvnext_log.adi)\n"
                     "  -f  test: play a WAV recording into the receiver instead of the sound card\n"
                     "  -s  test: speed of -f (e.g. 10 = ten times real time)\n"
                     "  -x  test: transmit into a WAV file instead of the sound card\n", prog);

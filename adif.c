@@ -69,13 +69,32 @@ static void adif_parse(const char *buf, size_t len)
     }
 }
 
-void adif_open(void)
+static void load_file(const char *path)
 {
-    if (!log_path[0]) { const char *h = getenv("HOME"); snprintf(log_path, sizeof log_path, "%s/digipan_log.adi", h && *h ? h : "."); }
-    FILE *f = fopen(log_path, "rb"); if (!f) return;
+    FILE *f = fopen(path, "rb"); if (!f) return;
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
     if (sz > 0 && sz < 64L * 1024 * 1024) { char *b = malloc((size_t)sz + 1); if (b) { size_t n = fread(b, 1, (size_t)sz, f); adif_parse(b, n); free(b); } }
     fclose(f);
+}
+static int log_rewrite(void);
+
+void adif_open(void)
+{
+    if (log_path[0]) { load_file(log_path); return; }
+    const char *h = getenv("HOME"); if (!h || !*h) h = ".";
+    snprintf(log_path, sizeof log_path, "%.280s/sstvnext_log.adi", h);
+    if (access(log_path, F_OK) == 0) { load_file(log_path); return; }
+    /* first start with an own log: up to 0.12 the program wrote DigiPan Next's log, so
+       its SSTV QSOs are copied over once (DigiPan's file is only read, never changed) */
+    char old[300]; snprintf(old, sizeof old, "%.280s/digipan_log.adi", h);
+    load_file(old);
+    int k = 0;
+    for (int i = 0; i < nqso; i++) {
+        if (!strcasecmp(qsos[i].mode, "SSTV")) qsos[k++] = qsos[i];
+        else free(qsos[i].raw);
+    }
+    nqso = k;
+    if (nqso > 0 && log_rewrite() != 0) fprintf(stderr, "sstv_next: cannot write %s\n", log_path);
 }
 
 static void adif_header(FILE *f)
