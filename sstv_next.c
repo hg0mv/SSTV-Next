@@ -273,16 +273,113 @@ static void button(int x, int y, int w, int h, const char *s, int active)
     if (tw <= w - 12) ui_text(F_REG, x + (w - tw) / 2, ty, s, active ? RGB(255, 255, 255) : c.text);
     else ui_text_fit(F_REG, x + 6, ty, s, active ? RGB(255, 255, 255) : c.text, w - 12);
 }
-/* text input: the end of the text is shown when it does not fit; a caret when focused */
+/* ---- one-line text editing: the caret can be put anywhere in the focused field ---- */
+static const char *caret_buf = NULL;     /* the field the caret is in */
+static size_t caret = 0;                 /* byte offset in it */
+static size_t caret_get(const char *s)
+{
+    size_t n = strlen(s);
+    if (s != caret_buf || caret > n) { caret_buf = s; caret = n; }   /* a new field: at the end */
+    return caret;
+}
+static size_t u8_prev(const char *s, size_t i)
+{
+    if (!i) return 0;
+    i--;
+    while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80) i--;
+    return i;
+}
+static size_t u8_next(const char *s, size_t i)
+{
+    if (!s[i]) return i;
+    i++;
+    while (s[i] && ((unsigned char)s[i] & 0xC0) == 0x80) i++;
+    return i;
+}
+/* width of s[a..b) */
+static int sub_w(int font, const char *s, size_t a, size_t b)
+{
+    char t[512];
+    size_t l = b > a ? b - a : 0;
+    if (l >= sizeof t) l = sizeof t - 1;
+    memcpy(t, s + a, l); t[l] = 0;
+    return ui_text_w(font, t);
+}
+/* first byte shown in a field of inner width w, so that position cur is visible */
+static size_t field_start(int font, const char *s, size_t cur, int w)
+{
+    size_t st = 0;
+    while (st < cur && sub_w(font, s, st, cur) > w) st = u8_next(s, st);
+    return st;
+}
+/* the text of a field from x (left edge of the box): the caret where it is when focused,
+   otherwise the end of a long text */
+static void field_text(int font, int x, int y, int w, int h, const char *s, int focus, col_t col)
+{
+    size_t cur = focus ? caret_get(s) : strlen(s), st = field_start(font, s, cur, w - 16);
+    ui_text_fit(font, x + 7, y + h / 2 + 5, s + st, col, w - 14);
+    if (focus) fill(x + 8 + sub_w(font, s, st, cur), y + 6, 1, h - 11, c.accent);
+}
+/* a click in a field: the caret goes to the nearest character boundary */
+static void field_click(int font, int x, int w, const char *s, int mx)
+{
+    size_t cur = caret_get(s), st = field_start(font, s, cur, w - 16), best = st;
+    int bd = 1 << 30;
+    for (size_t i = st;; i = u8_next(s, i)) {
+        int d = abs(x + 7 + sub_w(font, s, st, i) - mx);
+        if (d < bd) { bd = d; best = i; }
+        if (!s[i]) break;
+    }
+    caret_buf = s; caret = best;
+}
+/* editing keys (arrows, Home, End, BackSpace, Delete) and typed characters, inserted at the
+   caret. filt: accepts (and may change) a character, NULL: any printable one.
+   Returns 1 if the text changed. */
+static int line_edit(char *s, size_t size, KeySym ks, const char *kb, int kl, int (*filt)(char *))
+{
+    size_t n = strlen(s), cur = caret_get(s);
+    switch (ks) {
+    case XK_Left: case XK_KP_Left:   caret = u8_prev(s, cur); return 0;
+    case XK_Right: case XK_KP_Right: caret = u8_next(s, cur); return 0;
+    case XK_Home: case XK_KP_Home:   caret = 0; return 0;
+    case XK_End: case XK_KP_End:     caret = n; return 0;
+    case XK_BackSpace:
+        if (!cur) return 0;
+        { size_t p = u8_prev(s, cur); memmove(s + p, s + cur, n - cur + 1); caret = p; }
+        return 1;
+    case XK_Delete: case XK_KP_Delete:
+        if (cur >= n) return 0;
+        { size_t q = u8_next(s, cur); memmove(s + cur, s + q, n - q + 1); }
+        return 1;
+    }
+    int chg = 0;
+    for (int i = 0; i < kl; i++) {
+        char ch = kb[i];
+        unsigned char u = (unsigned char)ch;
+        if (filt ? !filt(&ch) : !((u >= 32 && u <= 126) || u >= 160)) continue;
+        if (n + 1 >= size) break;
+        memmove(s + caret + 1, s + caret, n - caret + 1);
+        s[caret++] = ch; n++; chg = 1;
+    }
+    return chg;
+}
+static int filt_call(char *ch)
+{
+    if (*ch >= 'a' && *ch <= 'z') *ch = (char)(*ch - 32);
+    return (*ch >= 'A' && *ch <= 'Z') || (*ch >= '0' && *ch <= '9') || *ch == '/';
+}
+static int filt_digit(char *ch) { return *ch >= '0' && *ch <= '9'; }
+static int filt_freq(char *ch) { return (*ch >= '0' && *ch <= '9') || *ch == '.'; }
+static int filt_ascii(char *ch) { return *ch >= 32 && *ch <= 126; }
+static int filt_name(char *ch) { return isalnum((unsigned char)*ch) || *ch == ' ' || *ch == '-' || *ch == '_'; }
+
+/* text input box; a caret when focused */
 static void field_box(int x, int y, int w, int h, const char *s, int focus)
 {
     if (focus) ui_rrect_line(x - 2, y - 2, w + 5, h + 5, 7, c.accent, 0.35);
     ui_rrect(x, y, w + 1, h + 1, 5, c.inset, 1);
     ui_rrect_line(x, y, w + 1, h + 1, 5, focus ? c.accent : c.grid, 1);
-    const char *sh = s;
-    while (*sh && ui_text_w(F_REG, sh) > w - 16) sh++;
-    int tw = ui_text(F_REG, x + 7, y + h / 2 + 5, sh, c.text);
-    if (focus) fill(x + 8 + tw, y + 6, 1, h - 11, c.accent);
+    field_text(F_REG, x, y, w, h, s, focus, c.text);
 }
 /* panel: rounded surface with a title (accent mark + bold label) */
 static void panel(int x, int y, int w, int h, const char *title, col_t accent)
@@ -1097,8 +1194,7 @@ static void log_box(int idx, int x, int y, int w, int h)
     ui_rrect(x, y, w + 1, h + 1, 5, c.inset, 1);
     ui_rrect_line(x, y, w + 1, h + 1, 5, foc ? c.accent : (idx == 0 && log_dupe_hard) ? c.red : c.grid, 1);
     col_t tc = (idx == 0 && log_dupe_hard) ? c.red : (idx == 3 && freq_auto && s[0]) ? c.yellow : c.text;
-    int tw = ui_text(idx == 0 ? F_BOLD : F_REG, x + 7, y + h / 2 + 5, s, tc);
-    if (foc) fill(x + 8 + tw, y + 6, 1, h - 11, c.accent);
+    field_text(idx == 0 ? F_BOLD : F_REG, x, y, w, h, s, foc, tc);
 }static void draw_log_bar(void)
 {
     int ly = log_bar_y(), ty = ly + LB_H / 2 + 5;
@@ -1241,11 +1337,12 @@ static void draw_rig_dialog(void)
     int rx = bx - (width - DLG_W) / 2, ry = by - DLG_Y;
     if (btn == 4 || btn == 5) { rig_scroll += btn == 4 ? -3 : 3; if (rig_scroll > rig_nvis - DLG_ROWS) rig_scroll = rig_nvis - DLG_ROWS; if (rig_scroll < 0) rig_scroll = 0; return; }
     if (btn != 1) return;
-    if (hit(rx, ry, 90, 44, 150, 28)) rig_focus = 0;
+    int dx0 = (width - DLG_W) / 2;
+    if (hit(rx, ry, 90, 44, 150, 28)) { if (rig_focus == 0) field_click(F_REG, dx0 + 90, 150, cfg.call, bx); rig_focus = 0; }
     else if (hit(rx, ry, 310, 44, 200, 28)) cfg_cat = !cfg_cat;
-    else if (hit(rx, ry, 20, 108, 600, 28)) rig_focus = 1;
+    else if (hit(rx, ry, 20, 108, 600, 28)) { if (rig_focus == 1) field_click(F_REG, dx0 + 20, 600, rig_filter, bx); rig_focus = 1; }
     else if (hit(rx, ry, 20, 142, 600, DLG_ROWS * 22 + 4)) { int i = rig_scroll + (ry - 142 - 2) / 22; if (i >= 0 && i < rig_nvis) { rig_select_vis(i); cfg_cat = 1; } }
-    else if (hit(rx, ry, 60, 352, 300, 28)) rig_focus = 2;
+    else if (hit(rx, ry, 60, 352, 300, 28)) { if (rig_focus == 2) field_click(F_REG, dx0 + 60, 300, cfg_port, bx); rig_focus = 2; }
     else if (hit(rx, ry, 370, 352, 60, 28)) {
         if (rig_nports == 0) rig_scan_ports();
         if (rig_nports == 0) snprintf(rig_status, sizeof rig_status, "No serial ports found (/dev/ttyUSB*, /dev/ttyACM*)");
@@ -1266,14 +1363,8 @@ static void rig_dlg_key(KeySym ks, const char *kb, int kl)
         rig_select_vis(i < 0 ? (d > 0 ? 0 : rig_nvis - 1) : i + d); if (cfg_model > 0) cfg_cat = 1;
         return;
     }
-    size_t mx; char *f = rig_field(&mx); size_t n = strlen(f);
-    if (ks == XK_BackSpace) { if (n) f[n - 1] = 0; if (rig_focus == 1) { rig_scroll = 0; rig_refilter(); } return; }
-    for (int i = 0; i < kl; i++) {
-        char ch = kb[i]; if (ch < 32 || ch > 126) continue;
-        if (rig_focus == 0) { if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32); if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/')) continue; }
-        if (n + 1 < mx) { f[n++] = ch; f[n] = 0; }
-    }
-    if (rig_focus == 1) { rig_scroll = 0; rig_refilter(); }
+    size_t mx; char *f = rig_field(&mx);
+    if (line_edit(f, mx, ks, kb, kl, rig_focus == 0 ? filt_call : filt_ascii) && rig_focus == 1) { rig_scroll = 0; rig_refilter(); }
 }
 
 /* ------------------------------------------------------------- log dialog */
@@ -1614,7 +1705,12 @@ static int log_bar_click(int x, int y, int btn)
     int ly = log_bar_y(), was = log_focus;
     if (!(y >= ly && y < ly + LB_H && btn == 1)) { if (was >= 0) log_focus = -1; return 0; }
     static const int fx[4] = { 44, 170, 230, 310 }, fw[4] = { 104, 40, 40, 80 };
-    for (int i = 0; i < 4; i++) if (x >= fx[i] && x < fx[i] + fw[i]) { log_focus = i; ed_focus = 0; return 1; }
+    for (int i = 0; i < 4; i++) if (x >= fx[i] && x < fx[i] + fw[i]) {
+        size_t mx; char *f = log_field_ptr(i, &mx);
+        if (log_focus == i) field_click(i == 0 ? F_BOLD : F_REG, fx[i], fw[i], f, x);   /* caret to the click */
+        else caret_buf = NULL;                                                          /* new field: at the end */
+        log_focus = i; ed_focus = 0; return 1;
+    }
     log_focus = -1;
     if (x >= width - 236 && x < width - 152) log_do();
     else if (x >= width - 142 && x < width - 86) log_reset_fields();
@@ -1626,16 +1722,8 @@ static void log_key(KeySym ks, const char *kb, int kl)
     if (ks == XK_Escape) { log_focus = -1; return; }
     if (ks == XK_Tab) { log_focus = (log_focus + 1) % 4; return; }
     if (ks == XK_Return || ks == XK_KP_Enter) { log_do(); return; }
-    size_t mx; char *f = log_field_ptr(log_focus, &mx); size_t n = strlen(f);
-    int chg = 0;
-    if (ks == XK_BackSpace) { if (n) { f[n - 1] = 0; chg = 1; } }
-    for (int i = 0; i < kl; i++) {
-        char ch = kb[i]; if (ch < 32 || ch > 126 || n + 1 >= mx) continue;
-        if (log_focus == 0) { if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32); if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/')) continue; }
-        else if (log_focus == 1 || log_focus == 2) { if (ch < '0' || ch > '9') continue; }
-        else if (!((ch >= '0' && ch <= '9') || ch == '.')) continue;
-        f[n++] = ch; f[n] = 0; chg = 1;
-    }
+    size_t mx; char *f = log_field_ptr(log_focus, &mx);
+    int chg = line_edit(f, mx, ks, kb, kl, log_focus == 0 ? filt_call : log_focus == 3 ? filt_freq : filt_digit);
     if (chg) {
         tx_render();
         if (log_focus == 3) freq_auto = 0;
@@ -1978,7 +2066,16 @@ static int ed_click(int mx, int my, int btn)
     if (mx >= RX0() && my >= TUN_Y && my < TXP_Y + TXP_H) {
         if (btn != 1) return 1;
         for (int i = nedb - 1; i >= 0; i--)
-            if (hit(mx, my, edb[i].x, edb[i].y, edb[i].w, edb[i].h)) { ed_tool(edb[i].id); break; }
+            if (hit(mx, my, edb[i].x, edb[i].y, edb[i].w, edb[i].h)) {
+                int was = ed_focus, id = edb[i].id;
+                ed_tool(id);
+                /* a click in the focused text / name field moves the caret there */
+                char *f = id == B_TEXTF && sel >= 0 && sel < cur_tpl.n ? cur_tpl.o[sel].text : id == B_NAME ? cur_tpl.name : NULL;
+                if (f && ((id == B_TEXTF && was == 1 && ed_focus == 1) || (id == B_NAME && was == 2 && ed_focus == 2)))
+                    field_click(F_REG, edb[i].x, edb[i].w, f, mx);
+                else if (f) caret_buf = NULL;              /* newly focused: caret at the end */
+                break;
+            }
         draw_editor_tools(); draw_editor_canvas(); draw_rx_status(); flush_ui();
         return 1;
     }
@@ -2038,29 +2135,19 @@ static void ed_key(KeySym ks, const char *kb, int kl)
     tobj *o = sel >= 0 && sel < cur_tpl.n ? &cur_tpl.o[sel] : NULL;
     if (ed_focus == 1 && o && o->type == OBJ_TEXT) {
         if (ks == XK_Escape || ks == XK_Return || ks == XK_KP_Enter || ks == XK_Tab) { ed_focus = 0; return; }
-        if (kl > 0 || ks == XK_BackSpace) {                                /* (not on Shift alone) */
-            if (ed_fresh) o->text[0] = 0;                                  /* typing replaces the default */
+        if (kl > 0 || ks == XK_BackSpace || ks == XK_Delete) {             /* (not on Shift or an arrow) */
+            if (ed_fresh) { o->text[0] = 0; caret_buf = NULL; }            /* typing replaces the default */
             ed_fresh = 0;
         }
-        size_t n = strlen(o->text);
-        if (ks == XK_BackSpace && n) o->text[n - 1] = 0;
-        for (int i = 0; i < kl; i++) {
-            unsigned char ch = (unsigned char)kb[i];
-            if (((ch >= 32 && ch <= 126) || ch >= 160) && n + 1 < sizeof o->text) { o->text[n++] = (char)ch; o->text[n] = 0; }
-        }
-        ed_changed();
+        if (line_edit(o->text, sizeof o->text, ks, kb, kl, NULL)) ed_changed();
+        else draw_editor_tools();                                          /* the caret moved */
         return;
     }
     if (ed_focus == 2) {
         if (ks == XK_Escape || ks == XK_Tab) { ed_focus = 0; return; }
         if (ks == XK_Return || ks == XK_KP_Enter) { ed_focus = 0; tpl_save_cur(); return; }
-        size_t n = strlen(cur_tpl.name);
-        if (ks == XK_BackSpace && n) cur_tpl.name[n - 1] = 0;
-        for (int i = 0; i < kl; i++) {
-            char ch = kb[i];
-            if ((isalnum((unsigned char)ch) || ch == ' ' || ch == '-' || ch == '_') && n + 1 < 40) { cur_tpl.name[n++] = ch; cur_tpl.name[n] = 0; }
-        }
-        tpl_dirty = 1;
+        if (line_edit(cur_tpl.name, 40, ks, kb, kl, filt_name)) tpl_dirty = 1;
+        else draw_editor_tools();
         return;
     }
     ed_focus = 0;

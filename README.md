@@ -175,6 +175,9 @@ Windows release, OpenJPEG `openjp2.dll` with `vcruntime140.dll`) are copied from
     picture); the *Picture* button inserts the latest one.
   - Mouse: click = select, drag = move, drag the blue corner = resize (font size for text),
     the two end points for a line. Keys: Del delete, arrows move by 1 pixel, Esc leaves.
+  - Text fields (here and everywhere in the program): click in the text or use the arrows,
+    Home and End to put the caret anywhere; typing inserts there, BackSpace / Delete remove
+    the character before / after it.
   - Toolbar: text, font (`<` `>`), outline/shadow/fill, fill and line colour (Fill/Line),
     size, line width, opacity, layer order (Up/Down), copy, delete.
   - Macros in the text, filled in at transmission: `%M` my callsign, `%C` the other station

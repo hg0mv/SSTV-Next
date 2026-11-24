@@ -79,6 +79,11 @@ typedef union {
 #define XK_Next          0xff56
 #define XK_End           0xff57
 #define XK_KP_Enter      0xff8d
+#define XK_KP_Home       0xff95
+#define XK_KP_Left       0xff96
+#define XK_KP_Right      0xff98
+#define XK_KP_End        0xff9c
+#define XK_KP_Delete     0xff9f
 #define XK_F1            0xffbe
 #define XK_ISO_Left_Tab  0xfe20
 #define XK_q             0x0071
